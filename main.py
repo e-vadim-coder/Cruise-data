@@ -7,6 +7,7 @@ import pandas as pd  # (0)
 from helpers import (  # (0)
     FIELDS_CONFIG,  # (4)
     create_backup,
+    get_file_hash,
     delete_row_from_df,  # (4)
     export_to_txt,  # (4)
     is_exact_match,  # (4)
@@ -16,7 +17,6 @@ from helpers import (  # (0)
     validate_type,  # (4)
     get_card_context  # (0)
 )  # (0)
-
 
 FILE_NAME = "voyage_data.xlsx"  # (0)
 
@@ -898,9 +898,35 @@ class DetailViewWindow:  # (0)
         self.window.destroy()  # (8)
 
 
-if __name__ == "__main__":  # (0)
-    create_backup("voyage_data.xlsx")
-    root = tk.Tk()  # (4)
-    app = VoyageAppTabs(root)  # (4)
-    root.mainloop()  # (4)
+if __name__ == "__main__":
+    # 1. Запоминаем хэш файла ДО запуска программы
+    start_hash = get_file_hash(FILE_NAME)
+    # 2. Делаем обязательный бэкап при старте (как у вас и было)
+    create_backup(FILE_NAME)
 
+    root = tk.Tk()
+    app = VoyageAppTabs(root)
+
+    # Функция безопасного закрытия
+    def on_closing():
+        # Отключаем перехватчик, чтобы избежать зацикливания при закрытии
+        root.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        # 3. Проверяем хэш файла в момент закрытия
+        end_hash = get_file_hash(FILE_NAME)
+
+        # Если хэши разные — значит, пользователь вносил изменения или сохранял данные
+        if start_hash != end_hash:
+            print("Обнаружены изменения в базе данных. Создается финальный бэкап...")
+            create_backup(FILE_NAME)
+        else:
+            print("Изменений не было. Финальный бэкап пропущен.")
+
+        # 4. Жестко и последовательно останавливаем интерфейс Tkinter
+        root.quit()
+        root.destroy()
+
+    # Привязываем закрытие окна на крестик к нашей чистой функции
+    root.protocol("WM_DELETE_WINDOW", on_closing)
+
+    root.mainloop()
