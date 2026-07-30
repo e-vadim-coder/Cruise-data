@@ -7,6 +7,7 @@ import pandas as pd
 import zipfile
 import glob
 from datetime import datetime
+import hashlib
 
 FIELDS_CONFIG = {
     "№ п/п": int,
@@ -252,3 +253,18 @@ def get_card_context(df, current_index: int) -> dict:  # (0)
     }  # (4)
 
     return context  # (4)
+
+import hashlib
+
+def get_file_hash(file_path: str) -> str:
+    """Вычисляет уникальную хэш-сумму самого файла Excel для сравнения."""
+    if not os.path.exists(file_path):
+        return ""
+    hasher = hashlib.md5()
+    try:
+        with open(file_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+    except Exception:
+        return ""
