@@ -177,27 +177,71 @@ class DetailViewWindow:  # (0)
             self.current_index += 1  # (8)
         self.refresh_cards()  # (8)
 
-    def save_center(self):  # (4)
+    def toggle_edit_mode(self, editable: bool):
+        """Включает или выключает редактирование полей центральной формы."""
+        state = "normal" if editable else "disabled"
+        for widget in self.center_fields.values():
+            widget.config(state=state)
+
+        # Здесь можно управлять видимостью или активностью кнопок
+        # Например, если editable=True, активируем кнопку "Сохранить"
+        # self.btn_save.config(state="normal" if editable else "disabled")
+
+    def save_center(self):  # Модифицированная функция сохранения (4)
         idx = self.app.df.index[self.current_index]  # (8)
+
         for key, widget in self.center_fields.items():  # (8)
-            val = widget.get().strip()  # (12)
+            # ВАЖНО: считываем данные, даже если виджет временно заблокирован
+            current_state = widget.cget("state")
+            if current_state == "disabled":
+                widget.config(state="normal")
+                val = widget.get().strip()
+                widget.config(state="disabled")
+            else:
+                val = widget.get().strip()
+
             if val == "":  # (12)
                 self.app.df.at[idx, key] = pd.NA  # (16)
             elif FIELDS_CONFIG[key]["type"] is int:  # (12)
                 try:
                     self.app.df.at[idx, key] = int(val)  # (16)
                 except ValueError:
-                    pass  # (16)
+                    # Будет правильно вывести предупреждение пользователю вместо тихого пропуска
+                    messagebox.showwarning("Ошибка типа", f"Поле '{key}' должно быть целым числом!")
+                    return  # Прерываем сохранение, если ввели буквы вместо цифр
             else:  # (12)
                 self.app.df.at[idx, key] = val  # (16)
+
         self.app.save_df_to_disk()  # (8)
         self.app.refresh_table()  # (8)
         self.refresh_cards()  # (8)
 
-    def export_current(self):  # (4)
+        # После успешного сохранения возвращаем форму в безопасный режим просмотра
+        self.toggle_edit_mode(editable=False)
+        messagebox.showinfo("Успех", "Изменения успешно сохранены!")
+
+    def export_current(self):  # Исправленная функция записи отчета (4)
         path = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text", "*.txt")])  # (8)
         if not path: return  # (8)
-        row_dict = self.app.df.iloc[self.current_index].to_dict()  # (8)
+
+        # Исправление: собираем словарь данных ПРЯМО из полей экрана, а не из DataFrame
+        row_dict = {}
+        for key, widget in self.center_fields.items():
+            current_state = widget.cget("state")
+            if current_state == "disabled":
+                widget.config(state="normal")
+                val = widget.get().strip()
+                widget.config(state="disabled")
+            else:
+                val = widget.get().strip()
+
+            # Если поле пустое, в отчет пойдет пустая строка, иначе актуальный текст
+            row_dict[key] = val if val != "" else "—"
+
+        # Добавляем ID текущей записи, если его нет в center_fields
+        if "№ п/п" not in row_dict:
+            row_dict["№ п/п"] = self.app.df.iloc[self.current_index].get("№ п/п", "")
+
         if helpers.export_to_txt_report(path, row_dict):  # (8)
             messagebox.showinfo("Успех", "Отчет успешно сохранен!")  # (12)
 

@@ -68,8 +68,6 @@ class VoyageAppTabs:  # (0)
             # tab_frame.columnconfigure(1, weight=1)  # (12)
             # tab_frame.columnconfigure(3, weight=1)  # (12)
 
-            # Строим сетку строго в два столбца по вашим скриншотам
-
             # Строим сетку в два столбца на основе латинских ключей
             for idx, key in enumerate(fields):  # (12)
                 info = FIELDS_CONFIG[key]  # (16)
@@ -93,22 +91,14 @@ class VoyageAppTabs:  # (0)
         btn_frame = tk.Frame(main_frame, bg="#f5f5f5")  # (8)
         btn_frame.pack(side=tk.TOP, fill=tk.X, pady=10)  # (8)
 
-        tk.Button(btn_frame, text="🔍 Поиск", command=self.search_data, bg="#0056b3", fg="white").pack(side=tk.LEFT,
-                                                                                                      padx=3)  # (8)
-        tk.Button(btn_frame, text="➕ Создать новую", command=self.add_data, bg="#28a745", fg="white").pack(side=tk.LEFT,
-                                                                                                           padx=3)  # (8)
-        tk.Button(btn_frame, text="📋 Из шаблона", command=lambda: None, bg="#6f42c1", fg="white").pack(side=tk.LEFT,
-                                                                                                       padx=3)  # (8)
-        tk.Button(btn_frame, text="💾 Сохранить изменения", command=self.update_data, bg="#fd7e14", fg="white").pack(
-            side=tk.LEFT, padx=3)  # (8)
-        tk.Button(btn_frame, text="❌ Удалить запись", command=self.delete_data, bg="#dc3545", fg="white").pack(
-            side=tk.LEFT, padx=3)  # (8)
-        tk.Button(btn_frame, text="Детальный просмотр", command=self.open_detail_view, bg="#b5835a", fg="white").pack(
-            side=tk.LEFT, padx=3)  # (8)
-        tk.Button(btn_frame, text="🧹 Сбросить форму", command=self.clear_form, bg="#6c757d", fg="white").pack(
-            side=tk.LEFT, padx=3)  # (8)
-        tk.Button(btn_frame, text="📊 Экспорт отчета", command=lambda: None, bg="#20c997", fg="white").pack(side=tk.LEFT,
-                                                                                                           padx=3)  # (8)
+        tk.Button(btn_frame, text="🔍 Поиск", command=self.search_data, bg="#0056b3", fg="white").pack(side=tk.LEFT, padx=3)  # (8)
+        tk.Button(btn_frame, text="➕ Создать новую", command=self.add_data, bg="#28a745", fg="white").pack(side=tk.LEFT, padx=3)  # (8)
+        tk.Button(btn_frame, text="📋 Из шаблона", command=lambda: None, bg="#6f42c1", fg="white").pack(side=tk.LEFT, padx=3)  # (8)
+        tk.Button(btn_frame, text="💾 Сохранить изменения", command=self.update_data, bg="#fd7e14", fg="white").pack(side=tk.LEFT, padx=3)  # (8)
+        tk.Button(btn_frame, text="❌ Удалить запись", command=self.delete_data, bg="#dc3545", fg="white").pack(side=tk.LEFT, padx=3)  # (8)
+        tk.Button(btn_frame, text="Детальный просмотр", command=self.open_detail_view, bg="#b5835a", fg="white").pack(side=tk.LEFT, padx=3)  # (8)
+        tk.Button(btn_frame, text="🧹 Сбросить форму", command=self.clear_form, bg="#6c757d", fg="white").pack(side=tk.LEFT, padx=3)  # (8)
+        tk.Button(btn_frame, text="📊 Экспорт отчета", command=lambda: None, bg="#20c997", fg="white").pack(side=tk.LEFT, padx=3)  # (8)
 
         # 3. НИЖНЯЯ ПАНЕЛЬ: Рамка, оригинальный заголовок и таблица Treeview
         lbl_table_title = tk.Label(main_frame, text="Просмотр базы данных рейсов", bg="#f5f5f5",
@@ -148,8 +138,6 @@ class VoyageAppTabs:  # (0)
             values = []  # (12)
             for key in self.table_keys:  # (12)
                 val = row[key]  # (16)
-
-
                 if pd.isna(val):                                                         # (16)
                     values.append("")                                                    # (20)
                 elif FIELDS_CONFIG[key]["type"] is int:                                  # (16)
@@ -199,7 +187,7 @@ class VoyageAppTabs:  # (0)
 
     def add_data(self):                                                                  # (4)
         data = self.get_form_values()                                                    # (8)
-        if "ERROR" in data.values():                                                     # (8)
+        if any(isinstance(v, str) and "ERROR" in v for v in data.values()):                                                 # (8)
             messagebox.showerror("Ошибка", "Числовые поля заполнены некорректно!")       # (12)
             return                                                                       # (12)
         max_id = self.df["id"].max() if not self.df.empty else 0                         # (8)
