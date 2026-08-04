@@ -7,6 +7,7 @@ import pandas as pd  # (0)
 from helpers import (  # (0)
     FIELDS_CONFIG,  # (4)
     create_backup,
+    get_file_hash,
     delete_row_from_df,  # (4)
     export_to_txt,  # (4)
     is_exact_match,  # (4)
@@ -17,12 +18,11 @@ from helpers import (  # (0)
     get_card_context  # (0)
 )  # (0)
 
-
 FILE_NAME = "voyage_data.xlsx"  # (0)
 
 DICTIONARIES = {  # (0)
     "Судно": ["Академик Николай Страхов", "Академик Борис Петров","Академик Мстислав Келдыш", "Академик Иоффе","Академик Сергей Вавилов", "Профессор Штокман"],  # (4)
-    "Начальник рейса": ["Дорохов Д.В.", "Кречик В.А.", "Крек А.В.", "Пономаренко Е.П.", "Бубнова Е.С.", "Данченков А.Р.", "Дорохова Е.В.", "Фрей Дмитрий Ильич"],  # (4)
+    "Начальник рейса": ["Щука С.А.", "Дорохов Д.В.", "Кречик В.А.", "Крек А.В.", "Пономаренко Е.П.", "Бубнова Е.С.", "Данченков А.Р.", "Дорохова Е.В.", "Фрей Дмитрий Ильич"],  # (4)
     "Начальник отряда геофизики": [  # (4)
         "Дорохов Д.В.",  # (8)
         "Ежов В.Е.",  # (8)
@@ -30,7 +30,8 @@ DICTIONARIES = {  # (0)
         "Дорохова Е.В.",
         "Дудков И.Ю.",
         "Кречик В.А.",
-        "Пономаренко Е.П."
+        "Пономаренко Е.П.",
+        "Сергеев А.Ю."
     ],  # (4)
     "Начальник отряда сейсмических исследований": [  # (4)
         "Ежов В.Е.",  # (8)
@@ -39,9 +40,9 @@ DICTIONARIES = {  # (0)
     "Инициатор научной задачи": ["Институт океанологии", "МГУ", "РАН"],  # (4)
     "Район исследования": ["Баренцево море", "SEB", "FZ", "Балтийское море", "Атлантика"],  # (4)
     "Тип данных": ["ОЛЭ", "МЛЭ", "Профилограф", "ГЛБО", "ADCP", "SADCP", "Сейсмокоса"],  # (4)
-    "Прибор": ["Konsberg EA-400", "EA-600", "SeaBat T50", "Parasound P70", "Benthos C3D", "SES2000"],  # (4)
+    "Прибор": ["Konsberg EA-400", "EA-600", "Reson SeaBat T50", "Reson SeaBat 8111", "Reson SeaBat 7150", "EdgeTech 3300-HM", "Parasound P70", "Benthos C3D", "SES2000"],  # (4)
     "Степень обработки": ["Необработанные", "Обработанные", "Сырые и обработанные"],  # (4)
-    "Формат файла": ["ASD, SEG-Y", "PDS2000", "ASCII", "DTM", "GeoTiff", "SEG-Y", "RAW", "SES2000"],  # (4)
+    "Формат файла": ["ASD, SEG-Y","JSF, SEG-Y", "PDS2000",  "Hypack project", "ASCII", "DTM", "GeoTiff", "SEG-Y", "RAW", "SES2000"],  # (4)
 }  # (0)
 
 TABS_CONFIG = {  # (0)
@@ -65,8 +66,8 @@ TABS_CONFIG = {  # (0)
         "Прибор",  # (8)
     ],  # (4)
     "Носители и файлы": [  # (4)
-        "Номер диска",  # (8)
-        "Инвентарный номер диска",  # (8)
+        "№ диска",  # (8)
+        "Инвентарный № диска",  # (8)
         "Степень обработки",  # (8)
         "Формат файла",  # (8)
         "Объем данных",  # (8)
@@ -610,11 +611,9 @@ class DetailViewWindow:  # (0)
         self.frame_center.grid(row=0, column=1, sticky="nsew", padx=5)  # (8)
         self.frame_right.grid(row=0, column=2, sticky="nsew", padx=5)  # (8)
 
-
-    def refresh_cards(self):  # (4)
+    def refresh_cards(self):
         from helpers import get_card_context  # (8)
         context = get_card_context(self.app.df, self.current_index)  # (8)
-
         self.lbl_position.config(text=context["current_pos_text"])  # (8)
         self.btn_first.config(state=tk.NORMAL if context["has_prev"] else tk.DISABLED)  # (8)
         self.btn_prev.config(state=tk.NORMAL if context["has_prev"] else tk.DISABLED)  # (8)
@@ -624,20 +623,21 @@ class DetailViewWindow:  # (0)
         for frame in (self.frame_left, self.frame_right):  # (8)
             for w in frame.winfo_children(): w.destroy()  # (12)
         for w in self.frame_center.winfo_children(): w.destroy()  # (8)
-
         self.center_entries.clear()  # (8)
 
+        # Используем общий метод сетки для всех трех карточек
         if context["left_data"] == "START":  # (8)
             tk.Label(self.frame_left, text="[ НАЧАЛО БАЗЫ ]", font=("Arial", 12, "bold"), fg="gray").pack(expand=True)  # (12)
         else:  # (8)
-            self.draw_static_view(self.frame_left, context["left_data"])  # (12)
+            # Передаем False для боковых, чтобы они были read-only
+            self.draw_scrollable_editable_view(self.frame_left, context["left_data"], is_center=False)  # (12)
 
-        self.draw_scrollable_editable_view(self.frame_center, context["center_data"])  # (8)
+        self.draw_scrollable_editable_view(self.frame_center, context["center_data"], is_center=True)  # (8)
 
         if context["right_data"] == "END":  # (8)
             tk.Label(self.frame_right, text="[ КОНЕЦ БАЗЫ ]", font=("Arial", 12, "bold"), fg="gray").pack(expand=True)  # (12)
         else:  # (8)
-            self.draw_static_view(self.frame_right, context["right_data"])  # (12)
+            self.draw_scrollable_editable_view(self.frame_right, context["right_data"], is_center=False)  # (12)
 
         self.btn_save.config(state=tk.DISABLED)  # (8)
         self.btn_edit.config(state=tk.NORMAL)  # (8)
@@ -668,12 +668,14 @@ class DetailViewWindow:  # (0)
                 lbl_val = tk.Label(scroll_frame, text=f"  {val_text}", font=("Arial", 9), fg="black", wraplength=300, justify="left")  # (16)
                 lbl_val.pack(anchor="w", pady=(0, 4))  # (16)
 
-    def draw_scrollable_editable_view(self, parent_frame, data_dict):  # (4)
-        parent_frame.config(bg="#ffffff")  # (8)
+    def draw_scrollable_editable_view(self, parent_frame, data_dict, is_center=True):
+        # Настраиваем цвет фона: для центра белый, для боков — мягкий серый
+        bg_color = "#ffffff" if is_center else "#f5f5f5"
+        parent_frame.config(bg=bg_color)
 
-        canvas = tk.Canvas(parent_frame, highlightthickness=0, bg="#ffffff")  # (8)
-        scrollbar = ttk.Scrollbar(parent_frame, orient="vertical", command=canvas.yview)  # (8)
-        scroll_frame = tk.Frame(canvas, bg="#ffffff")  # (8)
+        canvas = tk.Canvas(parent_frame, highlightthickness=0, bg=bg_color)
+        scrollbar = ttk.Scrollbar(parent_frame, orient="vertical", command=canvas.yview)
+        scroll_frame = tk.Frame(canvas, bg=bg_color)
 
         scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))  # (8)
         canvas.create_window((0, 0), window=scroll_frame, anchor="nw")  # (8)
@@ -715,7 +717,7 @@ class DetailViewWindow:  # (0)
         grid_row = 0  # (8)
 
         for group_name, fields in TABS_CONFIG.items():  # (8)
-            group_lbl = tk.Label(scroll_frame, text=f"--- {group_name.upper()} ---", font=("Arial", 10, "bold"), fg="blue", bg="#ffffff", pady=8)  # (12)
+            group_lbl = tk.Label(scroll_frame, text=f"--- {group_name.upper()} ---", font=("Arial", 10, "bold"), fg="blue", bg=bg_color, pady=8)  # (12)
             group_lbl.grid(row=grid_row, column=0, columnspan=6, sticky="w", padx=5)  # (12)
             grid_row += 1  # (12)
 
@@ -729,7 +731,7 @@ class DetailViewWindow:  # (0)
                     for col_idx, t_field in enumerate(t_fields):  # (20)
                         sub_frame = tk.Frame(scroll_frame, bg="#ffffff")  # (24)
                         sub_frame.grid(row=grid_row, column=col_idx*2, columnspan=2, sticky="ew", padx=4, pady=3)  # (24)
-                        lbl = tk.Label(sub_frame, text=t_field, font=("Arial", 9, "bold"), bg="#ffffff", fg="#333333")  # (24)
+                        lbl = tk.Label(sub_frame, text=t_field, font=("Arial", 9, "bold"), bg=bg_color, fg="#333333")  # (24)
                         lbl.pack(anchor="w")  # (24)
                         entry = tk.Entry(sub_frame, font=("Arial", 10), bd=1, relief=tk.GROOVE)  # (24)
                         val = data_dict.get(t_field, "")  # (24)
@@ -737,7 +739,8 @@ class DetailViewWindow:  # (0)
                         entry.insert(0, str(val) if pd.notna(val) else "")  # (24)
                         entry.config(state="readonly")  # (24)
                         entry.pack(fill=tk.X, pady=(2, 0))  # (24)
-                        self.center_entries[t_field] = entry  # (24)
+                        if is_center:
+                            self.center_entries[t_field] = entry  # (24)
                     grid_row += 1  # (20)
 
                 # Строка 2: Пара [ Судно ] [ № рейса ]  # (16)
@@ -746,7 +749,7 @@ class DetailViewWindow:  # (0)
                     for col_idx, p_field in enumerate(p_fields):  # (20)
                         sub_frame = tk.Frame(scroll_frame, bg="#ffffff")  # (24)
                         sub_frame.grid(row=grid_row, column=col_idx*3, columnspan=3, sticky="ew", padx=4, pady=3)  # (24)
-                        lbl = tk.Label(sub_frame, text=p_field, font=("Arial", 9, "bold"), bg="#ffffff", fg="#333333")  # (24)
+                        lbl = tk.Label(sub_frame, text=p_field, font=("Arial", 9, "bold"), bg=bg_color, fg="#333333")  # (24)
                         lbl.pack(anchor="w")  # (24)
                         entry = tk.Entry(sub_frame, font=("Arial", 10), bd=1, relief=tk.GROOVE)  # (24)
                         val = data_dict.get(p_field, "")  # (24)
@@ -754,7 +757,8 @@ class DetailViewWindow:  # (0)
                         entry.insert(0, str(val) if pd.notna(val) else "")  # (24)
                         entry.config(state="readonly")  # (24)
                         entry.pack(fill=tk.X, pady=(2, 0))  # (24)
-                        self.center_entries[p_field] = entry  # (24)
+                        if is_center:
+                            self.center_entries[p_field] = entry # (24)
                     grid_row += 1  # (20)
 
                 # Строка 3: Пара [ Дата начала рейса ] [ Дата окончания рейса ]  # (16)
@@ -763,7 +767,7 @@ class DetailViewWindow:  # (0)
                     for col_idx, d_field in enumerate(d_fields):  # (20)
                         sub_frame = tk.Frame(scroll_frame, bg="#ffffff")  # (24)
                         sub_frame.grid(row=grid_row, column=col_idx*3, columnspan=3, sticky="ew", padx=4, pady=3)  # (24)
-                        lbl = tk.Label(sub_frame, text=d_field, font=("Arial", 9, "bold"), bg="#ffffff", fg="#333333")  # (24)
+                        lbl = tk.Label(sub_frame, text=d_field, font=("Arial", 9, "bold"), bg=bg_color, fg="#333333")  # (24)
                         lbl.pack(anchor="w")  # (24)
                         entry = tk.Entry(sub_frame, font=("Arial", 10), bd=1, relief=tk.GROOVE)  # (24)
                         val = data_dict.get(d_field, "")  # (24)
@@ -771,7 +775,8 @@ class DetailViewWindow:  # (0)
                         entry.insert(0, str(val) if pd.notna(val) else "")  # (24)
                         entry.config(state="readonly")  # (24)
                         entry.pack(fill=tk.X, pady=(2, 0))  # (24)
-                        self.center_entries[d_field] = entry  # (24)
+                        if is_center:
+                            self.center_entries[d_field] = entry # (24)
                     grid_row += 1  # (20)
 
                 # Секции 2 и 3: попарная компоновка  # (16)
@@ -779,7 +784,7 @@ class DetailViewWindow:  # (0)
                     partner_field = paired_fields[field]  # (20)
                     sub_frame_left = tk.Frame(scroll_frame, bg="#ffffff")  # (20)
                     sub_frame_left.grid(row=grid_row, column=0, columnspan=3, sticky="ew", padx=4, pady=3)  # (20)
-                    lbl_l = tk.Label(sub_frame_left, text=field, font=("Arial", 9, "bold"), bg="#ffffff", fg="#333333")  # (20)
+                    lbl_l = tk.Label(sub_frame_left, text=field, font=("Arial", 9, "bold"), bg=bg_color, fg="#333333")  # (20)
                     lbl_l.pack(anchor="w")  # (20)
                     entry_l = tk.Entry(sub_frame_left, font=("Arial", 10), bd=1, relief=tk.GROOVE)  # (20)
                     val_l = data_dict.get(field, "")  # (20)
@@ -787,25 +792,29 @@ class DetailViewWindow:  # (0)
                     entry_l.insert(0, str(val_l) if pd.notna(val_l) else "")  # (20)
                     entry_l.config(state="readonly")  # (20)
                     entry_l.pack(fill=tk.X, pady=(2, 0))  # (20)
-                    self.center_entries[field] = entry_l  # (20)
+                    # ИСПРАВЛЕНИЕ: Записываем левое поле только если это центр
+                    if is_center:
+                        self.center_entries[field] = entry_l  # (20)
 
                     sub_frame_right = tk.Frame(scroll_frame, bg="#ffffff")  # (20)
                     sub_frame_right.grid(row=grid_row, column=3, columnspan=3, sticky="ew", padx=4, pady=3)  # (20)
-                    lbl_r = tk.Label(sub_frame_right, text=partner_field, font=("Arial", 9, "bold"), bg="#ffffff", fg="#333333")  # (20)
+                    lbl_r = tk.Label(sub_frame_right, text=partner_field, font=("Arial", 9, "bold"), bg=bg_color, fg="#333333")  # (20)
                     lbl_r.pack(anchor="w")  # (20)
                     entry_r = tk.Entry(sub_frame_right, font=("Arial", 10), bd=1, relief=tk.GROOVE)  # (20)
                     val_r = data_dict.get(partner_field, "")  # (20)
                     entry_r.insert(0, str(val_r) if pd.notna(val_r) else "")  # (20)
                     entry_r.config(state="readonly")  # (20)
                     entry_r.pack(fill=tk.X, pady=(2, 0))  # (20)
-                    self.center_entries[partner_field] = entry_r  # (20)
+                    # ИСПРАВЛЕНИЕ: Записываем правое поле только если это центр
+                    if is_center:
+                        self.center_entries[partner_field] = entry_r  # (20)
                     grid_row += 1  # (20)
 
                 # Одиночные длинные поля  # (16)
                 else:  # (16)
                     sub_frame_full = tk.Frame(scroll_frame, bg="#ffffff")  # (20)
                     sub_frame_full.grid(row=grid_row, column=0, columnspan=6, sticky="ew", padx=4, pady=3)  # (20)
-                    lbl = tk.Label(sub_frame_full, text=field, font=("Arial", 9, "bold"), bg="#ffffff", fg="#333333")  # (20)
+                    lbl = tk.Label(sub_frame_full, text=field, font=("Arial", 9, "bold"), bg=bg_color, fg="#333333")  # (20)
                     lbl.pack(anchor="w")  # (20)
                     entry = tk.Entry(sub_frame_full, font=("Arial", 10), bd=1, relief=tk.GROOVE)  # (20)
                     val = data_dict.get(field, "")  # (20)
@@ -813,7 +822,8 @@ class DetailViewWindow:  # (0)
                     entry.insert(0, str(val) if pd.notna(val) else "")  # (20)
                     entry.config(state="readonly")  # (20)
                     entry.pack(fill=tk.X, pady=(2, 0))  # (20)
-                    self.center_entries[field] = entry  # (20)
+                    if is_center:
+                        self.center_entries[field] = entry
                     grid_row += 1  # (20)
 
 
@@ -898,9 +908,35 @@ class DetailViewWindow:  # (0)
         self.window.destroy()  # (8)
 
 
-if __name__ == "__main__":  # (0)
-    create_backup("voyage_data.xlsx")
-    root = tk.Tk()  # (4)
-    app = VoyageAppTabs(root)  # (4)
-    root.mainloop()  # (4)
+if __name__ == "__main__":
+    # 1. Запоминаем хэш файла ДО запуска программы
+    start_hash = get_file_hash(FILE_NAME)
+    # 2. Делаем обязательный бэкап при старте (как у вас и было)
+    create_backup(FILE_NAME)
 
+    root = tk.Tk()
+    app = VoyageAppTabs(root)
+
+    # Функция безопасного закрытия
+    def on_closing():
+        # Отключаем перехватчик, чтобы избежать зацикливания при закрытии
+        root.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        # 3. Проверяем хэш файла в момент закрытия
+        end_hash = get_file_hash(FILE_NAME)
+
+        # Если хэши разные — значит, пользователь вносил изменения или сохранял данные
+        if start_hash != end_hash:
+            print("Обнаружены изменения в базе данных. Создается финальный бэкап...")
+            create_backup(FILE_NAME)
+        else:
+            print("Изменений не было. Финальный бэкап пропущен.")
+
+        # 4. Жестко и последовательно останавливаем интерфейс Tkinter
+        root.quit()
+        root.destroy()
+
+    # Привязываем закрытие окна на крестик к нашей чистой функции
+    root.protocol("WM_DELETE_WINDOW", on_closing)
+
+    root.mainloop()
