@@ -344,7 +344,7 @@ class VoyageAppTabs:  # (0)
             "Создание по шаблону",  # (12)
             "Вы хотите отредактировать новую запись после создания?\n\n"  # (12)
             "«Да» — создать и сразу открыть карточку «Детальный просмотр» для исправления\n"  # (12)
-            "«Нет» — просто создать копию на том же диске (изменится только № п/п)\n"  # (12)
+            "«Нет» — просто создать копию (изменится только № п/п)\n"  # (12)
             "«Отмена» — выйти и ничего не менять в таблице"  # (12)
         )  # (8)
 
@@ -387,7 +387,7 @@ class VoyageAppTabs:  # (0)
             # Обновляем таблицу вашим методом
             self.refresh_table()  # (12)
 
-            messagebox.showinfo("Успех", f"Запись успешно скопирована на тот же диск! Новый № п/п: {template_row['№ п/п']}")  # (12)
+            messagebox.showinfo("Успех", f"Запись успешно скопирована! Новый № п/п: {template_row['№ п/п']}")  # (12)
 
     def clear_form(self):  # (4)
         reset_form_fields(self.inputs)  # (8)
@@ -612,7 +612,6 @@ class DetailViewWindow:  # (0)
         self.frame_right.grid(row=0, column=2, sticky="nsew", padx=5)  # (8)
 
     def refresh_cards(self):
-        from helpers import get_card_context  # (8)
         context = get_card_context(self.app.df, self.current_index)  # (8)
         self.lbl_position.config(text=context["current_pos_text"])  # (8)
         self.btn_first.config(state=tk.NORMAL if context["has_prev"] else tk.DISABLED)  # (8)
@@ -642,31 +641,6 @@ class DetailViewWindow:  # (0)
         self.btn_save.config(state=tk.DISABLED)  # (8)
         self.btn_edit.config(state=tk.NORMAL)  # (8)
 
-    def draw_static_view(self, parent_frame, data_dict):  # (4)
-        canvas = tk.Canvas(parent_frame, highlightthickness=0)  # (8)
-        scrollbar = ttk.Scrollbar(parent_frame, orient="vertical", command=canvas.yview)  # (8)
-        scroll_frame = tk.Frame(canvas)  # (8)
-
-        scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))  # (8)
-        canvas.create_window((0, 0), window=scroll_frame, anchor="nw")  # (8)
-        canvas.configure(yscrollcommand=scrollbar.set)  # (8)
-
-        canvas.pack(side="left", fill="both", expand=True)  # (8)
-        scrollbar.pack(side="right", fill="y")  # (8)
-
-        from main import TABS_CONFIG  # (8)
-        for group_name, fields in TABS_CONFIG.items():  # (8)
-            tk.Label(scroll_frame, text=f"■ {group_name}", font=("Arial", 9, "bold"), fg="#555").pack(anchor="w", pady=(8, 2))  # (12)
-
-            for field in fields:  # (12)
-                val = data_dict.get(field, "")  # (16)
-                import pandas as pd  # (16)
-                val_text = str(val) if val != "" and pd.notna(val) else "-"  # (16)
-
-                lbl_field = tk.Label(scroll_frame, text=f"  {field}:", font=("Arial", 8, "bold"), fg="gray")  # (16)
-                lbl_field.pack(anchor="w")  # (16)
-                lbl_val = tk.Label(scroll_frame, text=f"  {val_text}", font=("Arial", 9), fg="black", wraplength=300, justify="left")  # (16)
-                lbl_val.pack(anchor="w", pady=(0, 4))  # (16)
 
     def draw_scrollable_editable_view(self, parent_frame, data_dict, is_center=True):
         # Настраиваем цвет фона: для центра белый, для боков — мягкий серый
@@ -704,16 +678,15 @@ class DetailViewWindow:  # (0)
         # Словарь попарных полей для 2 и 3 секций  # (8)
         paired_fields = {  # (8)
             "№ этапа рейса": "Тип данных",  # (12)
-            "Номер диска": "Инвентарный номер диска"  # (12)
+            "№ диска": "Инвентарный № диска"  # (12)
         }  # (8)
 
         # Полный список полей, которые мы пропускаем при обычном обходе  # (8)
         skip_fields = [  # (8)
             "Год", "Рейс", "№ рейса", "Дата окончания рейса",  # (12)
-            "Тип данных", "Инвентарный номер диска"  # (12)
+            "Тип данных", "Инвентарный № диска"  # (12)
         ]  # (8)
 
-        from main import TABS_CONFIG  # (8)
         grid_row = 0  # (8)
 
         for group_name, fields in TABS_CONFIG.items():  # (8)
@@ -849,7 +822,7 @@ class DetailViewWindow:  # (0)
         updated_row = {}  # (8)
 
         # Списки числовых полей из условий вашей задачи для явного приведения типов
-        int_fields = ["№ п/п", "Год", "№ рейса", "№ этапа рейса", "Номер диска", "Инвентарный номер диска"]  # (8)
+        int_fields = ["№ п/п", "Год", "№ рейса", "№ этапа рейса", "№ диска", "Инвентарный № диска"]  # (8)
 
         for field, entry in self.center_entries.items():  # (8)
             val = entry.get().strip()  # (12)
