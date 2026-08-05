@@ -8,6 +8,7 @@ from helpers import (  # (0)
     FIELDS_CONFIG,  # (4)
     DICTIONARIES,
     TABS_CONFIG,
+    TABLE_HEADINGS_SHORT,
     create_backup,
     clean_duplicate_backups,
     get_file_hash,
@@ -28,7 +29,7 @@ class VoyageAppTabs:  # (0)
 
     def __init__(self, root):  # (4)
         self.root = root  # (8)
-        self.root.title("Учет рейсовых данных — Полный функционал")  # (8)
+        self.root.title(" - - - - - - - - - - -  Учет рейсовых данных  - - - - - - - - - - - ")  # (8)
         self.root.geometry("1400x980")  # (8)
 
         self.df = load_data(FILE_NAME)  # (8)
@@ -195,7 +196,9 @@ class VoyageAppTabs:  # (0)
         self.tree.pack(fill="both", expand=True)  # (8)
 
         for field in FIELDS_CONFIG.keys():  # (8)
-            self.tree.heading(field, text=field)  # (12)
+            # Берем короткое имя из словаря, если его там нет — оставляем длинное
+            short_text = TABLE_HEADINGS_SHORT.get(field, field)
+            self.tree.heading(field, text=short_text)
             self.tree.column(field, width=125, anchor="center")  # (12)
 
     def get_form_values(self) -> dict:  # (4)
@@ -235,7 +238,9 @@ class VoyageAppTabs:  # (0)
 
         for field in FIELDS_CONFIG.keys():  # (8)
             # Измеряем длину заголовка колонки (+ запас на стрелочку сортировки)
-            max_len = tk_font.measure(str(field)) + 25  # (12)
+            # max_len = tk_font.measure(str(field)) + 25  # (12)
+            short_text = TABLE_HEADINGS_SHORT.get(field, field)
+            max_len = tk_font.measure(str(short_text)) + 25
 
             # Если в таблице есть данные, ищем самую длинную строку в текущей колонке
             if not display_df.empty:  # (12)
@@ -247,10 +252,10 @@ class VoyageAppTabs:  # (0)
                 max_len = max(max_len, max(col_lens) + 15)  # (16)
 
             # Ограничиваем минимальную и максимальную ширину для красоты (от 70 до 350 пикселей)
-            final_width = min(max(max_len, 70), 350)  # (12)
+            final_width = min(max(max_len, 50), 113)  # (12)
 
             # Применяем вычисленную ширину к колонке
-            self.tree.column(field, width=final_width, anchor="center")  # (12)
+            self.tree.column(field, width=final_width, anchor="center", stretch=False, minwidth=final_width)  # (12)
 
     def on_row_select(self, event):  # (4)
         selected_items = self.tree.selection()  # (8)
