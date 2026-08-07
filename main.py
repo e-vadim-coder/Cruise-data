@@ -24,12 +24,11 @@ from helpers import (  # (0)
 
 FILE_NAME = "voyage_data.xlsx"  # (0)
 
-
 class VoyageAppTabs:  # (0)
 
     def __init__(self, root):  # (4)
         self.root = root  # (8)
-        self.root.title(" - - - - - - - - - - -  Учет рейсовых данных  - - - - - - - - - - - ")  # (8)
+        self.root.title(" - - - - - Учет рейсовых данных - - - - -  ")  # (8)
         self.root.geometry("1400x980")  # (8)
 
         self.df = load_data(FILE_NAME)  # (8)
@@ -557,8 +556,8 @@ class DetailViewWindow:  # (0)
 
         self.frame_center = tk.LabelFrame(  # (8)
             cards_frame,  # (12)
-            text="Центральная запись (Редактирование)",  # (12)
-            bd=2, relief=tk.SOLID, padx=5, pady=5, fg="blue"  # (12)
+            text="---Центральная запись--- (Редактирование)",  # (12)
+            bd=2, relief=tk.SOLID, padx=5, pady=5, fg="black"  # (12)
         )  # (8)
 
         self.frame_left.grid(row=0, column=0, sticky="nsew", padx=5)  # (8)
@@ -644,7 +643,7 @@ class DetailViewWindow:  # (0)
         grid_row = 0  # (8)
 
         for group_name, fields in TABS_CONFIG.items():  # (8)
-            group_lbl = tk.Label(scroll_frame, text=f"--- {group_name.upper()} ---", font=("Arial", 10, "bold"), fg="blue", bg=bg_color, pady=8)  # (12)
+            group_lbl = tk.Label(scroll_frame, text=f"--------------- {group_name.upper()} ---------------", font=("Arial", 10, "bold"), fg="black", bg=bg_color, pady=8)  # (12)
             group_lbl.grid(row=grid_row, column=0, columnspan=6, sticky="w", padx=5)  # (12)
             grid_row += 1  # (12)
 
@@ -660,7 +659,9 @@ class DetailViewWindow:  # (0)
                         sub_frame.grid(row=grid_row, column=col_idx*2, columnspan=2, sticky="ew", padx=4, pady=3)  # (24)
                         lbl = tk.Label(sub_frame, text=t_field, font=("Arial", 9, "italic"), bg=bg_color, fg="#333333")  # (24)
                         lbl.pack(anchor="w")  # (24)
-                        entry = tk.Entry(sub_frame, font=("Arial", 10), bd=1, relief=tk.GROOVE)  # (24)
+                        # текст в полях вертикальных карточек
+                        entry = tk.Entry(sub_frame, font=("Arial", 10, "bold"), bd=1, relief=tk.GROOVE, fg="#000055")  # (24)
+
                         val = data_dict.get(t_field, "")  # (24)
                         entry.insert(0, str(val) if pd.notna(val) else "")  # (24)
                         entry.config(state="readonly")  # (24)
@@ -677,7 +678,9 @@ class DetailViewWindow:  # (0)
                         sub_frame.grid(row=grid_row, column=col_idx*3, columnspan=3, sticky="ew", padx=4, pady=3)  # (24)
                         lbl = tk.Label(sub_frame, text=p_field, font=("Arial", 9, "italic"), bg=bg_color, fg="#333333")  # (24)
                         lbl.pack(anchor="w")  # (24)
-                        entry = tk.Entry(sub_frame, font=("Arial", 10), bd=1, relief=tk.GROOVE)  # (24)
+                        # текст в полях вертикальных карточек
+                        entry = tk.Entry(sub_frame, font=("Arial", 10, "bold"), bd=1, relief=tk.GROOVE, fg="#000055")  # (24)
+
                         val = data_dict.get(p_field, "")  # (24)
                         entry.insert(0, str(val) if pd.notna(val) else "")  # (24)
                         entry.config(state="readonly")  # (24)
@@ -694,7 +697,9 @@ class DetailViewWindow:  # (0)
                         sub_frame.grid(row=grid_row, column=col_idx*3, columnspan=3, sticky="ew", padx=4, pady=3)  # (24)
                         lbl = tk.Label(sub_frame, text=d_field, font=("Arial", 9, "italic"), bg=bg_color, fg="#333333")  # (24)
                         lbl.pack(anchor="w")  # (24)
-                        entry = tk.Entry(sub_frame, font=("Arial", 10), bd=1, relief=tk.GROOVE)  # (24)
+                        # текст в полях вертикальных карточек
+                        entry = tk.Entry(sub_frame, font=("Arial", 10, "bold"), bd=1, relief=tk.GROOVE, fg="#000055")  # (24)
+
                         val = data_dict.get(d_field, "")  # (24)
                         entry.insert(0, str(val) if pd.notna(val) else "")  # (24)
                         entry.config(state="readonly")  # (24)
@@ -710,7 +715,9 @@ class DetailViewWindow:  # (0)
                     sub_frame_left.grid(row=grid_row, column=0, columnspan=3, sticky="ew", padx=4, pady=3)  # (20)
                     lbl_l = tk.Label(sub_frame_left, text=field, font=("Arial", 9, "italic"), bg=bg_color, fg="#333333")  # (20)
                     lbl_l.pack(anchor="w")  # (20)
-                    entry_l = tk.Entry(sub_frame_left, font=("Arial", 10), bd=1, relief=tk.GROOVE)  # (20)
+                    # текст в полях вертикальных карточек
+                    entry_l = tk.Entry(sub_frame_left, font=("Arial", 10, "bold"), bd=1, relief=tk.GROOVE, fg="#000055")  # (20)
+
                     val_l = data_dict.get(field, "")  # (20)
                     entry_l.insert(0, str(val_l) if pd.notna(val_l) else "")  # (20)
                     entry_l.config(state="readonly")  # (20)
@@ -723,7 +730,9 @@ class DetailViewWindow:  # (0)
                     sub_frame_right.grid(row=grid_row, column=3, columnspan=3, sticky="ew", padx=4, pady=3)  # (20)
                     lbl_r = tk.Label(sub_frame_right, text=partner_field, font=("Arial", 9, "italic"), bg=bg_color, fg="#333333")  # (20)
                     lbl_r.pack(anchor="w")  # (20)
-                    entry_r = tk.Entry(sub_frame_right, font=("Arial", 10), bd=1, relief=tk.GROOVE)  # (20)
+                    # текст в полях вертикальных карточек
+                    entry_r = tk.Entry(sub_frame_right, font=("Arial", 10, "bold"), bd=1, relief=tk.GROOVE, fg="#000055")  # (20)
+
                     val_r = data_dict.get(partner_field, "")  # (20)
                     entry_r.insert(0, str(val_r) if pd.notna(val_r) else "")  # (20)
                     entry_r.config(state="readonly")  # (20)
@@ -739,7 +748,9 @@ class DetailViewWindow:  # (0)
                     sub_frame_full.grid(row=grid_row, column=0, columnspan=6, sticky="ew", padx=4, pady=3)  # (20)
                     lbl = tk.Label(sub_frame_full, text=field, font=("Arial", 9, "italic"), bg=bg_color, fg="#333333")  # (20)
                     lbl.pack(anchor="w")  # (20)
-                    entry = tk.Entry(sub_frame_full, font=("Arial", 10), bd=1, relief=tk.GROOVE)  # (20)
+                    # текст в полях вертикальных карточек
+                    entry = tk.Entry(sub_frame_full, font=("Arial", 10, "bold"), bd=1, relief=tk.GROOVE, fg="#000055")  # (20)
+
                     val = data_dict.get(field, "")  # (20)
                     entry.insert(0, str(val) if pd.notna(val) else "")  # (20)
                     entry.config(state="readonly")  # (20)
