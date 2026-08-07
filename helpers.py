@@ -5,8 +5,95 @@ import tkinter as tk
 from tkinter import ttk
 import pandas as pd
 import zipfile
+import tempfile
 import glob
-from datetime import datetime
+from datetime import datetime, timedelta
+import hashlib
+
+DICTIONARIES = {  # (0)
+    "Судно": [
+        "Академик Николай Страхов",
+        "Академик Борис Петров",
+        "Академик Мстислав Келдыш",
+        "Академик Иоффе",
+        "Академик Сергей Вавилов",
+        "Профессор Штокман"
+    ],  # (4)
+    "Начальник рейса": [
+        "Сивков В.В.",
+        "Щука С.А.",
+        "Дорохов Д.В.",
+        "Кречик В.А.",
+        "Крек А.В.",
+        "Пономаренко Е.П.",
+        "Бубнова Е.С.",
+        "Данченков А.Р.",
+        "Дорохова Е.В.",
+        "Фрей Д.И.",
+        "Баширова Л.Д."
+    ],  # (4)
+    "Начальник отряда геофизики": [  # (4)
+        "Дорохов Д.В.",  # (8)
+        "Ежов В.Е.",  # (8)
+        "Данченков А.Р.", # (8)
+        "Дорохова Е.В.",
+        "Дудков И.Ю.",
+        "Кречик В.А.",
+        "Пономаренко Е.П.",
+        "Сергеев А.Ю.",
+        "Луговой Н.Н.",
+        "Матуль А.Г."
+    ],  # (4)
+    "Начальник отряда сейсмических исследований": [  # (4)
+        "Ежов В.Е.",  # (8)
+        "Ананьев Р.А."  # (8)
+    ],  # (4)
+    "Инициатор научной задачи": ["Институт океанологии", "МГУ", "РАН"],  # (4)
+    "Район исследования": ["Баренцево море", "SEB", "FZ", "Балтийское море", "Атлантика"],  # (4)
+    "Тип данных": ["ОЛЭ", "МЛЭ", "Профилограф", "ГЛБО", "ADCP", "SADCP", "Сейсмокоса"],  # (4)
+    "Прибор": [
+        "Konsberg EA-400",
+        "EA-600",
+        "Reson SeaBat T50",
+        "Reson SeaBat 8111",
+        "Reson SeaBat 7150",
+        "EdgeTech 3300-HM",
+        "Parasound P70",
+        "Benthos C3D",
+        "SES2000"
+    ],  # (4)
+    "Степень обработки": ["Необработанные", "Обработанные", "Сырые и обработанные"],  # (4)
+    "Формат файла": ["ASD, SEG-Y","JSF, SEG-Y", "PDS2000",  "Hypack project", "Qinsy project", "ASCII", "DTM", "GeoTiff", "SEG-Y", "RAW", "SES2000"],  # (4)
+}  # (0)
+
+TABS_CONFIG = {  # (0)
+    "Общая информация": [  # (4)
+        "№ п/п",  # (8)
+        "Год",  # (8)
+        "Рейс",  # (8)
+        "Судно",  # (8)
+        "№ рейса",  # (8)
+        "Начальник рейса",  # (8)
+        "Дата начала рейса",  # (8)
+        "Дата окончания рейса",  # (8)
+    ],  # (4)
+    "Геофизика и приборы": [  # (4)
+        "№ этапа рейса",  # (8)
+        "Начальник отряда геофизики",  # (8)
+        "Начальник отряда сейсмических исследований",
+        "Инициатор научной задачи",  # (8)
+        "Район исследования",  # (8)
+        "Тип данных",  # (8)
+        "Прибор",  # (8)
+    ],  # (4)
+    "Носители и файлы": [  # (4)
+        "№ диска",  # (8)
+        "Инвентарный № диска",  # (8)
+        "Степень обработки",  # (8)
+        "Формат файла",  # (8)
+        "Объем данных",  # (8)
+    ],  # (4)
+}  # (0)
 
 FIELDS_CONFIG = {
     "№ п/п": int,
@@ -17,9 +104,9 @@ FIELDS_CONFIG = {
     "Дата начала рейса": str,
     "Дата окончания рейса": str,
     "Начальник рейса": str,
-    "№ этапа рейса": int,
-    "Номер диска": int,
-    "Инвентарный номер диска": int,
+    "№ этапа рейса": str,
+    "№ диска": int,
+    "Инвентарный № диска": int,
     "Начальник отряда геофизики": str,
     "Начальник отряда сейсмических исследований": str,
     "Инициатор научной задачи": str,
@@ -31,8 +118,22 @@ FIELDS_CONFIG = {
     "Объем данных": str,
 }
 
+# Словарь сокращений только для шапки Treeview
+TABLE_HEADINGS_SHORT = {
+    "№ этапа рейса": "этап",
+    "№ диска": "диск",
+    "Дата начала рейса": "Дата нач.рейса",
+    "Дата окончания рейса": "Дата оконч.рейса",
+    "Начальник рейса": "Нач.рейса",
+    "Инвентарный № диска": "Инв.№ диска",
+    "Начальник отряда геофизики": "Нач.отр.геофиз.",
+    "Начальник отряда сейсмических исследований": "Нач.отр.сейсм.иссл-ий",
+    "Инициатор научной задачи": "Инициатор научн.зад.",
+    "Район исследования": "Район иссл-ния",
+    # Для остальных полей, которых нет в словаре, программа автоматически оставит полное название
+}
 
-def create_backup(file_path: str, backup_dir: str = "backups", max_backups: int = 40) -> bool:
+def create_backup(file_path: str, backup_dir: str = "backups", max_backups: int = 50) -> bool:
     """
     Создает сжатую zip-копию файла данных, сохраняет в указанную директорию
     и удаляет старые копии, оставляя только N последних.
@@ -252,3 +353,101 @@ def get_card_context(df, current_index: int) -> dict:  # (0)
     }  # (4)
 
     return context  # (4)
+
+
+def get_file_hash(file_path: str) -> str:
+    """Вычисляет уникальную хэш-сумму самого файла Excel для сравнения."""
+    if not os.path.exists(file_path):
+        return ""
+    hasher = hashlib.md5()
+    try:
+        with open(file_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+    except Exception:
+        return ""
+
+
+def clean_duplicate_backups(backup_dir="backups", target_filename="voyage_data.xlsx", days_interval=10):
+    """
+    Проверяет дату последней очистки по файлу-маркеру. Если прошло >= days_interval дней,
+    распаковывает архивы во временную папку, вычисляет хэш вложенного Excel-файла
+    и удаляет дубликаты, освобождая их из памяти перед удалением (фикс WinError 32).
+    """
+    marker_file = os.path.join(backup_dir, ".last_clean.txt")
+    now = datetime.now()
+
+    # Проверяем и создаем папку бэкапов, если её нет
+    if not os.path.exists(backup_dir):
+        os.makedirs(backup_dir)
+
+    # Логика контроля интервала (не чаще чем раз в 10 дней)
+    if os.path.exists(marker_file):
+        try:
+            with open(marker_file, "r") as f:
+                last_clean_str = f.read().strip()
+                last_clean_date = datetime.strptime(last_clean_str, "%Y-%m-%d")
+
+            # Если 10 дней еще не прошло — тихо выходим, не нагружая процессор
+            if now - last_clean_date < timedelta(days=days_interval):
+                return
+        except Exception:
+            # Если маркер поврежден, игнорируем ошибку и проводим уборку
+            pass
+
+    # Находим все zip-архивы и сортируем их от новых к старым
+    backup_files = glob.glob(os.path.join(backup_dir, "*.zip"))
+    backup_files.sort(key=os.path.getmtime, reverse=True)
+
+    if not backup_files:
+        return
+
+    seen_hashes = set()
+    deleted_count = 0
+
+    # Создаем изолированную временную папку для распаковки
+    with tempfile.TemporaryDirectory() as temp_dir:
+        for archive_path in backup_files:
+            file_hash = None
+
+            try:
+                # 1. Открываем архив строго для извлечения файла и расчета хэша
+                with zipfile.ZipFile(archive_path, 'r') as zip_ref:
+                    if target_filename in zip_ref.namelist():
+                        zip_ref.extract(target_filename, path=temp_dir)
+                        extracted_file_path = os.path.join(temp_dir, target_filename)
+
+                        # Вычисляем хэш функцией из helpers.py
+                        file_hash = get_file_hash(extracted_file_path)
+
+                        # Сразу удаляем временный Excel-файл из temp-папки
+                        os.remove(extracted_file_path)
+                    else:
+                        print(f"Внимание: файл {target_filename} не найден в {os.path.basename(archive_path)}")
+            except Exception as e:
+                print(f"Ошибка при чтении архива {os.path.basename(archive_path)}: {e}")
+                continue
+
+            # 2. ВАЖНО: Мы вышли из блока 'with'. Архив гарантированно закрыт!
+            # Теперь Windows не заблокирует файл, и его можно безопасно удалить.
+            if file_hash is not None:
+                if file_hash in seen_hashes:
+                    try:
+                        os.remove(archive_path)
+                        print(f"Удален дубликат бэкапа (идентичные данные): {os.path.basename(archive_path)}")
+                        deleted_count += 1
+                    except Exception as e:
+                        print(f"Не удалось удалить файл {os.path.basename(archive_path)}: {e}")
+                else:
+                    # Если хэш уникальный (данные новые) — запоминаем его
+                    seen_hashes.add(file_hash)
+
+    # Обновляем дату в файле-маркере, чтобы зафиксировать успешную уборку
+    try:
+        with open(marker_file, "w") as f:
+            f.write(now.strftime("%Y-%m-%d"))
+        if deleted_count > 0:
+            print(f"Генеральная уборка завершена. Удалено дубликатов: {deleted_count}. Следующая через {days_interval} дней.")
+    except Exception as e:
+        print(f"Не удалось обновить маркер очистки: {e}")
