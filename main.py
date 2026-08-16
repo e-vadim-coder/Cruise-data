@@ -19,7 +19,11 @@ from helpers import (  # (0)
     reset_form_fields,  # (4)
     save_data,  # (4)
     validate_type,  # (4)
-    get_card_context  # (0)
+    get_card_context, # (4)
+    SUB_FILE_NAME,
+    SUB_TABLE_FIELDS,
+    SUB_TABLE_HEADINGS_SHORT,
+    generate_row_uid
 )  # (0)
 
 FILE_NAME = "voyage_data.xlsx"  # (0)
@@ -33,6 +37,19 @@ class VoyageAppTabs:  # (0)
         self.root.geometry("1400x980")  # (8)
 
         self.df = load_data(FILE_NAME)  # (8)
+
+        # Загрузка связанных данных каталогов
+        self.sub_df = load_data(SUB_FILE_NAME)
+
+        # Автоматическая проверка и очистка сирот при старте программы
+        from helpers import check_and_clean_relations
+        self.sub_df = check_and_clean_relations(self.df, self.sub_df)
+        # Сразу сохраняем чистый результат на диск, если что-то было удалено
+        save_data(self.sub_df, SUB_FILE_NAME)
+
+        if self.sub_df.empty or "UID_Родителя" not in self.sub_df.columns:
+            self.sub_df = pd.DataFrame(columns=list(SUB_TABLE_FIELDS.keys()))
+
         self.selected_index = None  # (8)
         self.template_index = None  # (8)
         self.inputs = {}  # (8)
@@ -50,6 +67,7 @@ class VoyageAppTabs:  # (0)
         self.create_widgets()  # (8)
         self.refresh_table()  # (8)
         self.tree.bind("<<TreeviewSelect>>", self.on_row_select)  # (8)
+        self.sub_table_visible = False  # По умолчанию скрыта
 
     def create_widgets(self):  # (4)
         # --- ВКЛАДКИ ДЛЯ ВВОДА ДАННЫХ ---  # (8)
@@ -62,6 +80,8 @@ class VoyageAppTabs:  # (0)
 
             row, col = 0, 0  # (12)
             for field in fields:  # (12)
+                if field == "UID":  # не показывать поле "UID"
+                    continue
                 lbl = tk.Label(  # (16)
                     tab_frame, text=field + ":", font=("Arial", 10)  # (20)
                 )  # (16)
@@ -146,6 +166,15 @@ class VoyageAppTabs:  # (0)
         )  # (8)
         self.btn_detail_view.pack(side=tk.LEFT, padx=2)  # (8)
 
+        # Кнопка переключения видимости подчинённой таблицы (в стиле просмотра)
+        self.toggle_btn = tk.Button(
+            btn_frame,
+            text="Каталоги рейса",  # Сделаем название покороче, чтобы влезало
+            bg="#d2b48c",  # Тот же самый светло-коричневый цвет
+            font=("Arial", 10),  # Такой же аккуратный нежирный шрифт
+            command=self.toggle_sub_table
+        )
+        self.toggle_btn.pack(side=tk.LEFT, padx=2)  # Точно такая же упаковка в ряд
 
         tk.Button(  # (8)
             btn_frame,  # (12)
@@ -196,10 +225,151 @@ class VoyageAppTabs:  # (0)
         self.tree.pack(fill="both", expand=True)  # (8)
 
         for field in FIELDS_CONFIG.keys():  # (8)
+            if field == "UID":  # не показывать поле "UID"
+                continue
             # Берем короткое имя из словаря, если его там нет — оставляем длинное
             short_text = TABLE_HEADINGS_SHORT.get(field, field)
             self.tree.heading(field, text=short_text)
             self.tree.column(field, width=125, anchor="center")  # (12)
+
+        # --- БЛОК ПОДЧИНЁННОЙ ТАБЛИЦЫ ---
+        self.sub_frame = tk.LabelFrame(self.root, text=" Детализация каталогов и метаданных для выбранного рейса ", font=("Arial", 10, "bold"))
+        # sub_frame.pack(fill="x", expand=False, padx=10, pady=5)
+
+        # Сетка: Таблица слева, поля ввода справа
+        sub_table_container = tk.Frame(self.sub_frame)
+        sub_table_container.pack(side="left", fill="both", expand=True, padx=5, pady=5)
+
+        self.sub_tree = ttk.Treeview(sub_table_container, columns=list(SUB_TABLE_FIELDS.keys()), show="headings", height=5)
+        #  исправление
+        self.sub_tree.bind("<<TreeviewSelect>>", self.on_sub_row_select)
+        # -----------------
+        sub_scroll_x = tk.Scrollbar(sub_table_container, orient="horizontal", command=self.sub_tree.xview)
+        sub_scroll_y = tk.Scrollbar(sub_table_container, orient="vertical", command=self.sub_tree.yview)
+        self.sub_tree.configure(xscrollcommand=sub_scroll_x.set, yscrollcommand=sub_scroll_y.set)
+
+        self.sub_tree.pack(fill="both", expand=True)
+        sub_scroll_x.pack(fill="x")
+        sub_scroll_y.pack(side="right", fill="y")
+
+        for field in SUB_TABLE_FIELDS.keys():
+            short_text = SUB_TABLE_HEADINGS_SHORT.get(field, field)
+            self.sub_tree.heading(field, text=short_text)
+            self.sub_tree.column(field, width=110, anchor="center")
+
+        # Панель ввода для подчинённой таблицы (справа)
+        sub_inputs_frame = tk.Frame(self.sub_frame, padx=10)
+        sub_inputs_frame.pack(side="right", fill="y", pady=5)
+
+        self.sub_inputs = {}
+        fields_to_input = [f for f in SUB_TABLE_FIELDS.keys() if f != "UID_Родителя"]
+
+        for idx, field in enumerate(fields_to_input):
+            lbl = tk.Label(sub_inputs_frame, text=field + ":", font=("Arial", 9))
+            lbl.grid(row=idx, column=0, sticky="w", pady=2)
+            entry = tk.Entry(sub_inputs_frame, width=25)
+            entry.grid(row=idx, column=1, padx=5, pady=2)
+            self.sub_inputs[field] = entry
+
+        # Кнопки управления подчинённой таблицей
+        sub_btn_frame = tk.Frame(sub_inputs_frame)
+        sub_btn_frame.grid(row=len(fields_to_input), column=0, columnspan=2, pady=10)
+
+        # Создаем кнопку сохранения изменений в нижней панели
+        self.btn_save_sub = tk.Button(
+            sub_btn_frame, # Имя вашего фрейма для кнопок каталогов
+            text="Сохранить изменения",
+            font=("Arial", 10, "bold"),
+            bg="#d1e7dd", # Симпатичный мягкий зеленый цвет
+            command=self.update_sub_data
+        )
+        self.btn_save_sub.pack(side=tk.LEFT, padx=5)
+        tk.Button(sub_btn_frame, text="➕ Добавить каталог", bg="#27ae60", fg="white", font=("Arial", 9, "bold"),
+                  command=self.add_sub_data).pack(side="left", padx=5)
+        tk.Button(sub_btn_frame, text="❌ Удалить каталог", bg="#c0392b", fg="white", font=("Arial", 9, "bold"),
+                  command=self.delete_sub_data).pack(side="left", padx=5)
+
+    def update_sub_data(self):
+        """Сохраняет измененные данные каталога обратно в Excel"""
+        # Проверяем, выбрана ли строка для редактирования
+        if not hasattr(self, 'selected_sub_index') or self.selected_sub_index is None:
+            messagebox.showwarning("Внимание", "Сначала выберите строку в нижней таблице для редактирования!")
+            return
+
+        # Собираем измененные данные из полей ввода
+        updated_row = {}
+        for field, entry in self.sub_inputs.items():
+            val = entry.get().strip()
+            # Валидация числовых полей
+            if SUB_TABLE_FIELDS[field] is int:
+                updated_row[field] = int(val) if (val.isdigit() or (val.startswith('-') and val[1:].isdigit())) else 0
+            else:
+                updated_row[field] = val
+
+        try:
+            # Нам КРИТИЧЕСКИ важно оставить старые UID и UID_Родителя неизменными,
+            # чтобы не разрушить связи таблиц при сохранении!
+            old_uid = self.sub_df.at[self.selected_sub_index, "UID"]
+            old_parent_uid = self.sub_df.at[self.selected_sub_index, "UID_Родителя"]
+
+            # Записываем обновленные поля в DataFrame по сохраненному индексу
+            for field, value in updated_row.items():
+                self.sub_df.at[self.selected_sub_index, field] = value
+
+            # Возвращаем скрытые ключи на место
+            self.sub_df.at[self.selected_sub_index, "UID"] = old_uid
+            self.sub_df.at[self.selected_sub_index, "UID_Родителя"] = old_parent_uid
+
+            # Физически сохраняем файл на диск
+            save_data(self.sub_df, SUB_FILE_NAME)
+
+            # Очищаем нижние поля ввода
+            for entry in self.sub_inputs.values():
+                entry.delete(0, tk.END)
+
+            # Обнулили выбор, чтобы случайно не перезаписать повторно
+            self.selected_sub_index = None
+
+            # Обновляем нижнюю таблицу на экране (вызываем ваш родной метод)
+            self.on_row_select(None)
+            messagebox.showinfo("Успех", "Изменения в каталоге успешно сохранены!")
+
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось сохранить изменения: {e}")
+
+    def on_sub_row_select(self, event):
+        """Автоматически заполняет нижние поля ввода данными выбранного каталога"""
+        selected_items = self.sub_tree.selection()
+        if not selected_items:
+            return
+
+        # Получаем iid строки, который у нас равен индексу в датафрейме self.sub_df
+        sub_idx = int(selected_items[0])
+        self.selected_sub_index = sub_idx  # Запоминаем, какую строку редактируем
+
+        try:
+            sub_row_data = self.sub_df.loc[sub_idx].to_dict()
+            # Пробегаемся по нижним полям ввода и вставляем туда данные
+            for field, entry in self.sub_inputs.items():
+                entry.delete(0, tk.END)
+                val = sub_row_data.get(field, "")
+                if pd.isna(val): val = ""
+                entry.insert(0, str(val))
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось прочитать данные каталога: {e}")
+
+    def toggle_sub_table(self):
+        if self.sub_table_visible:
+            self.sub_frame.pack_forget()
+            self.sub_table_visible = False
+            # Возвращаем стандартный цвет просмотра
+            self.toggle_btn.config(text="Каталоги рейса", bg="#d2b48c", fg="black")
+        else:
+            self.sub_frame.pack(fill="x", expand=False, padx=10, pady=5)
+            self.sub_table_visible = True
+            # При активации делаем её контрастной (например, темно-коричневой с белым текстом)
+            self.toggle_btn.config(text="▲ Скрыть каталоги", bg="#8b5a2b", fg="white")
+            self.on_row_select(None)
 
     def get_form_values(self) -> dict:  # (4)
         return {  # (8)
@@ -257,29 +427,47 @@ class VoyageAppTabs:  # (0)
             # Применяем вычисленную ширину к колонке
             self.tree.column(field, width=final_width, anchor="center", stretch=False, minwidth=final_width)  # (12)
 
-    def on_row_select(self, event):  # (4)
-        selected_items = self.tree.selection()  # (8)
-        if not selected_items:  # (8)
-            return  # (12)
+    def on_row_select(self, event):
+        selected_items = self.tree.selection()
+        if not selected_items:
+            # Если рейс удален и выделение снято — просто стираем всё из нижнего окна
+            for item in self.sub_tree.get_children():
+                self.sub_tree.delete(item)
+            return
 
-        # Явно берем индекс первой выбранной строки в Treeview
-        tree_id = selected_items[0]  # (8)
-        self.selected_index = int(tree_id)  # (8)
-        self.template_index = None  # Сбрасываем шаблон при обычном редактировании  # (8)
+        tree_id = selected_items[0]
+        self.selected_index = int(tree_id)
+        self.template_index = None
 
-        # Получаем данные строки из нашего DataFrame
-        row_data = self.df.loc[self.selected_index]  # (8)
+        row_data = self.df.loc[self.selected_index].to_dict()
 
-        reset_form_fields(self.inputs)  # (8)
+        # --- ФИЛЬТРАЦИЯ ПОДЧИНЁННОЙ ТАБЛИЦЫ ПО UID ---
+        # Берем сохраненный в ячейке UID, чтобы нижнее окно сразу увидело записи
+        try:
+            parent_uid = str(self.df.at[self.selected_index, "UID"]).strip()
+        except Exception:
+            parent_uid = generate_row_uid(row_data)
 
-        for field, widget in self.inputs.items():  # (8)
-            val = row_data[field]  # (12)
-            if pd.isna(val):  # (12)
-                val = ""  # (16)
-            if isinstance(widget, ttk.Combobox):  # (12)
-                widget.set(str(val))  # (16)
-            else:  # (12)
-                widget.insert(0, str(val))  # (16)
+        # Очищаем старые дочерние строки в UI
+        for item in self.sub_tree.get_children():
+            self.sub_tree.delete(item)
+
+        # Выбираем только те строки, которые соответствуют UID родителя
+        matched_subs = self.sub_df[self.sub_df["UID_Родителя"] == parent_uid]
+        for idx, row in matched_subs.iterrows():
+            values = ["" if pd.isna(val) else val for val in row]
+            self.sub_tree.insert("", "end", iid=str(idx), values=values)
+        # --------------
+
+        # Старый неизменяемый код заполнения основных вкладок
+        reset_form_fields(self.inputs)
+        for field, widget in self.inputs.items():
+            val = row_data[field]
+            if pd.isna(val): val = ""
+            if isinstance(widget, ttk.Combobox):
+                widget.set(str(val))
+            else:
+                widget.insert(0, str(val))
 
     def prepare_template(self):  # (4)
         selected_items = self.tree.selection()  # (8)
@@ -288,10 +476,7 @@ class VoyageAppTabs:  # (0)
             return  # (12)
 
         # Безопасно извлекаем ID выделенной строки из кортежа
-        if isinstance(selected_items, (tuple, list)):  # (8)
-            selected_id = selected_items[0]  # (12)
-        else:  # (8)
-            selected_id = selected_items  # (12)
+        selected_id = selected_items[0] if isinstance(selected_items, (tuple, list)) else selected_items  # (12)
 
         # Выводим диалоговое окно с тремя вариантами действий  # (8)
         choice = messagebox.askyesnocancel(  # (8)
@@ -302,45 +487,37 @@ class VoyageAppTabs:  # (0)
             "«Отмена» — выйти и ничего не менять в таблице"  # (12)
         )  # (8)
 
-        # Сценарий 1: Пользователь нажал «Отмена» (Выходим без изменений)  # (8)
+        # Сценарий 1: Пользователь нажал «Отмена» — сразу выходим
         if choice is None:  # (8)
             return  # (12)
+        # Общая логика для сценариев 2 и 3
+        # Извлекаем строку-шаблон в словарь
+        template_row = self.df.loc[int(selected_id)].to_dict()  # (12)
 
-        # Сценарий 2: Пользователь нажал «Да» (Создать и открыть детальное окно)
-        elif choice is True:  # (8)
-            # Извлекаем строку-шаблон в словарь  # (12)
-            template_row = self.df.loc[int(selected_id)].to_dict()  # (12)
+        # Вычисляем уникальный № п/п (исторический максимум во всей базе + 1)
+        if "№ п/п" in template_row:  # (12)
+            max_pp = self.df["№ п/п"].max()  # (16)
+            template_row["№ п/п"] = int(max_pp) + 1 if pd.notna(max_pp) else 1  # (16)
 
-            # Вычисляем уникальный № п/п (исторический максимум во всей базе + 1)  # (12)
-            if "№ п/п" in template_row:  # (12)
-                max_pp = self.df["№ п/п"].max()  # (16)
-                template_row["№ п/п"] = int(max_pp) + 1 if pd.notna(max_pp) else 1  # (16)
+        # Принудительно генерируем СВЕЖИЙ уникальный UID для новой записи
+        template_row["UID"] = generate_row_uid(template_row)
 
-            # Добавляем новую строку в Pandas DataFrame  # (12)
-            new_index = len(self.df)  # (12)
-            self.df.loc[new_index] = template_row  # (12)
+        # Добавляем новую строку в Pandas DataFrame
+        new_index = len(self.df)  # (12)
+        self.df.loc[new_index] = template_row  # (12)
 
-            # Вызываем ваше родное обновление таблицы
-            self.refresh_table()  # (12)
+        # Синхронно сохраняем обновленную таблицу на диск в Excel
+        save_data(self.df, FILE_NAME)
 
-            # ИСПРАВЛЕНО: Запускаем окно локально из этого же файла main.py
+        # Обновляем таблицу на экране
+        self.refresh_table()  # (12)
+
+        # Сценарий 2: Пользователь нажал «Да» — открываем карточку детального просмотра
+        if choice is True:  # (8)
             DetailViewWindow(self, new_index)  # (12)
-            
-        # Сценарий 3: Пользователь нажал «Нет» (Просто копия на том же диске)  # (8)
+
+        # Сценарий 3: Пользователь нажал «Нет» — просто пишем, что всё скопировано
         elif choice is False:  # (8)
-            template_row = self.df.loc[int(selected_id)].to_dict()  # (12)
-
-            # Пересчитываем строго системный № п/п, диски копируются 1 в 1  # (12)
-            if "№ п/п" in template_row:  # (12)
-                max_pp = self.df["№ п/п"].max()  # (16)
-                template_row["№ п/п"] = int(max_pp) + 1 if pd.notna(max_pp) else 1  # (16)
-
-            new_index = len(self.df)  # (12)
-            self.df.loc[new_index] = template_row  # (12)
-
-            # Обновляем таблицу вашим методом
-            self.refresh_table()  # (12)
-
             messagebox.showinfo("Успех", f"Запись успешно скопирована! Новый № п/п: {template_row['№ п/п']}")  # (12)
 
     def clear_form(self):  # (4)
@@ -348,6 +525,7 @@ class VoyageAppTabs:  # (0)
         self.selected_index = None  # (8)
         self.template_index = None  # (8)
         self.refresh_table()  # (8)
+
     def add_data(self):  # (4)
         data = self.get_form_values()  # (8)
         if not self.validate_form_data(data):  # (8)
@@ -403,23 +581,46 @@ class VoyageAppTabs:  # (0)
         self.refresh_table()  # (8)
         self.clear_form()  # (8)
         messagebox.showinfo("Готово", "Изменения успешно сохранены в таблицу и файл!")  # (8)
+
     def delete_data(self):  # (4)
         selected_item = self.tree.selection()  # (8)
         if not selected_item:  # (8)
-            messagebox.showwarning(  # (12)
-                "Удаление", "Сначала выберите строку в таблице для удаления."  # (16)
-            )  # (12)
-            return  # (12)
+            return
+
         target_index = int(selected_item[0])  # (8)
-        if messagebox.askyesno(  # (8)
-            "Подтверждение",  # (12)
-            "Вы уверены, что хотите безвозвратно удалить эту запись?",  # (12)
-        ):  # (8)
+
+        if messagebox.askyesno("Подтверждение", "Вы уверены, что хотите удалить эту запись и все связанные каталоги?"):
+            try:
+                # ВАЖНО: Просто считываем уже готовый UID из ячейки выбранной строки!
+                parent_uid = self.df.at[target_index, "UID"]
+            except Exception:
+                messagebox.showerror("Ошибка", "Не удалось считать уникальный ключ записи.")
+                return
+
+            # ШАГ 1: Сначала удаляем сам рейс из основного DataFrame и сохраняем его на диск
             self.df = delete_row_from_df(self.df, target_index)  # (12)
             save_data(self.df, FILE_NAME)  # (12)
-            self.refresh_table()  # (12)
-            self.clear_form()  # (12)
-            messagebox.showinfo("Успех", "Запись успешно удалена.")  # (12)
+
+            # ШАГ 2: Принудительно обновляем индексы главной таблицы в памяти,
+            # чтобы программа зафиксировала новое состояние базы данных
+            self.df = self.df.reset_index(drop=True)
+
+            # ШАГ 3: ТОЛЬКО ТЕПЕРЬ фильтруем подчиненную таблицу по parent_uid
+            # Принудительно приводим к строковому типу, чтобы исключить нестыковку форматов Excel
+
+            self.sub_df["UID_Родителя"] = self.sub_df["UID_Родителя"].astype(str).str.strip()
+            clean_uid = str(parent_uid).strip()
+
+            self.sub_df = self.sub_df[self.sub_df["UID_Родителя"] != clean_uid].reset_index(drop=True)
+
+            # ШАГ 4: Физически записываем очищенную подчиненную таблицу на диск
+            save_data(self.sub_df, SUB_FILE_NAME)
+
+            # ШАГ 5: Перерисовываем экран (теперь данные гарантированно не вернутся)
+            self.refresh_table()
+            self.clear_form()
+            messagebox.showinfo("Успех", "Запись рейса и все связанные каталоги успешно удалены.")
+
     def search_data(self):  # (4)
         search_criteria = self.get_form_values()  # (8)
         filtered_df = self.df.copy()  # (8)
@@ -482,6 +683,63 @@ class VoyageAppTabs:  # (0)
             status = "отфильтрованных" if is_filtered else "всех"  # (12)
             messagebox.showinfo("Успех",
                                 f"Отчет по форме ({status} записей: {len(export_df)}) успешно сохранен!")  # (12)
+
+    def add_sub_data(self):
+        if self.selected_index is None:
+            messagebox.showwarning("Внимание", "Сначала выберите рейс в основной таблице!")
+            return
+
+        # parent_row = self.df.loc[self.selected_index].to_dict()
+        # parent_uid = generate_row_uid(parent_row)
+        # Берем уже ГОТОВЫЙ, зафиксированный UID из ячейки выбранного рейса
+        # Это гарантирует, что ключ будет 1 в 1 таким же, каким его увидит программа при перезапуске
+        try:
+            parent_uid = str(self.df.at[self.selected_index, "UID"]).strip()
+        except Exception:
+            # Если колонки UID в df еще нет, берем ваш родной parent_row
+            parent_row = self.df.loc[self.selected_index].to_dict()
+            parent_uid = generate_row_uid(parent_row)
+
+        # Собираем данные из полей ввода каталогов
+        new_row = {"UID_Родителя": parent_uid}
+        for field, entry in self.sub_inputs.items():
+            val = entry.get().strip()
+            # Простая валидация типов для чисел
+            if SUB_TABLE_FIELDS[field] is int:
+                new_row[field] = int(val) if (val.isdigit() or (val.startswith('-') and val[1:].isdigit())) else 0
+            else:
+                new_row[field] = val
+        # МГНОВЕННЫЙ РАСЧЕТ СОБСТВЕННОГО UID КАТАЛОГА)
+        # Вычисляем следующий физический индекс для новой строки в подчиненной таблице
+        next_idx = len(self.sub_df)
+        # Присваиваем личный уникальный UID, связывая ключ родителя и номер строки
+        new_row["UID"] = f"{parent_uid}__sub_{next_idx}"
+
+        # Добавляем в DataFrame и сохраняем файл
+        self.sub_df = pd.concat([self.sub_df, pd.DataFrame([new_row])], ignore_index=True)
+        save_data(self.sub_df, SUB_FILE_NAME)
+
+        # Очищаем поля ввода дочерней таблицы
+        for entry in self.sub_inputs.values():
+            entry.delete(0, tk.END)
+
+        # Обновляем отображение
+        self.on_row_select(None)
+        messagebox.showinfo("Готово", "Данные о каталогах успешно добавлены!")
+
+    def delete_sub_data(self):
+        selected_sub = self.sub_tree.selection()
+        if not selected_sub:
+            messagebox.showwarning("Удаление", "Выберите строку в нижней таблице для удаления.")
+            return
+
+        target_idx = int(selected_sub[0])
+        if messagebox.askyesno("Подтверждение", "Удалить выбранную запись о каталоге?"):
+            self.sub_df = self.sub_df.drop(target_idx).reset_index(drop=True)
+            save_data(self.sub_df, SUB_FILE_NAME)
+            self.on_row_select(None)
+            messagebox.showinfo("Успех", "Запись удалена.")
+
 
 class DetailViewWindow:  # (0)
     def __init__(self, app_instance, start_index: int):  # (4)
@@ -660,7 +918,9 @@ class DetailViewWindow:  # (0)
                         sub_frame.grid(row=grid_row, column=col_idx*2, columnspan=2, sticky="ew", padx=4, pady=3)  # (24)
                         lbl = tk.Label(sub_frame, text=t_field, font=("Arial", 9, "italic"), bg=bg_color, fg="#333333")  # (24)
                         lbl.pack(anchor="w")  # (24)
-                        entry = tk.Entry(sub_frame, font=("Arial", 10), bd=1, relief=tk.GROOVE)  # (24)
+                        # текст в полях вертикальных карточек
+                        entry = tk.Entry(sub_frame, font=("Arial", 10, "bold"), bd=1, relief=tk.GROOVE, fg="#000055")  # (24)
+
                         val = data_dict.get(t_field, "")  # (24)
                         entry.insert(0, str(val) if pd.notna(val) else "")  # (24)
                         entry.config(state="readonly")  # (24)
@@ -677,7 +937,9 @@ class DetailViewWindow:  # (0)
                         sub_frame.grid(row=grid_row, column=col_idx*3, columnspan=3, sticky="ew", padx=4, pady=3)  # (24)
                         lbl = tk.Label(sub_frame, text=p_field, font=("Arial", 9, "italic"), bg=bg_color, fg="#333333")  # (24)
                         lbl.pack(anchor="w")  # (24)
-                        entry = tk.Entry(sub_frame, font=("Arial", 10), bd=1, relief=tk.GROOVE)  # (24)
+                        # текст в полях вертикальных карточек
+                        entry = tk.Entry(sub_frame, font=("Arial", 10, "bold"), bd=1, relief=tk.GROOVE, fg="#000055")  # (24)
+
                         val = data_dict.get(p_field, "")  # (24)
                         entry.insert(0, str(val) if pd.notna(val) else "")  # (24)
                         entry.config(state="readonly")  # (24)
@@ -694,7 +956,9 @@ class DetailViewWindow:  # (0)
                         sub_frame.grid(row=grid_row, column=col_idx*3, columnspan=3, sticky="ew", padx=4, pady=3)  # (24)
                         lbl = tk.Label(sub_frame, text=d_field, font=("Arial", 9, "italic"), bg=bg_color, fg="#333333")  # (24)
                         lbl.pack(anchor="w")  # (24)
-                        entry = tk.Entry(sub_frame, font=("Arial", 10), bd=1, relief=tk.GROOVE)  # (24)
+                        # текст в полях вертикальных карточек
+                        entry = tk.Entry(sub_frame, font=("Arial", 10, "bold"), bd=1, relief=tk.GROOVE, fg="#000055")  # (24)
+
                         val = data_dict.get(d_field, "")  # (24)
                         entry.insert(0, str(val) if pd.notna(val) else "")  # (24)
                         entry.config(state="readonly")  # (24)
@@ -710,7 +974,9 @@ class DetailViewWindow:  # (0)
                     sub_frame_left.grid(row=grid_row, column=0, columnspan=3, sticky="ew", padx=4, pady=3)  # (20)
                     lbl_l = tk.Label(sub_frame_left, text=field, font=("Arial", 9, "italic"), bg=bg_color, fg="#333333")  # (20)
                     lbl_l.pack(anchor="w")  # (20)
-                    entry_l = tk.Entry(sub_frame_left, font=("Arial", 10), bd=1, relief=tk.GROOVE)  # (20)
+                    # текст в полях вертикальных карточек
+                    entry_l = tk.Entry(sub_frame_left, font=("Arial", 10, "bold"), bd=1, relief=tk.GROOVE, fg="#000055")  # (20)
+
                     val_l = data_dict.get(field, "")  # (20)
                     entry_l.insert(0, str(val_l) if pd.notna(val_l) else "")  # (20)
                     entry_l.config(state="readonly")  # (20)
@@ -723,7 +989,9 @@ class DetailViewWindow:  # (0)
                     sub_frame_right.grid(row=grid_row, column=3, columnspan=3, sticky="ew", padx=4, pady=3)  # (20)
                     lbl_r = tk.Label(sub_frame_right, text=partner_field, font=("Arial", 9, "italic"), bg=bg_color, fg="#333333")  # (20)
                     lbl_r.pack(anchor="w")  # (20)
-                    entry_r = tk.Entry(sub_frame_right, font=("Arial", 10), bd=1, relief=tk.GROOVE)  # (20)
+                    # текст в полях вертикальных карточек
+                    entry_r = tk.Entry(sub_frame_right, font=("Arial", 10, "bold"), bd=1, relief=tk.GROOVE, fg="#000055")  # (20)
+
                     val_r = data_dict.get(partner_field, "")  # (20)
                     entry_r.insert(0, str(val_r) if pd.notna(val_r) else "")  # (20)
                     entry_r.config(state="readonly")  # (20)
@@ -739,7 +1007,9 @@ class DetailViewWindow:  # (0)
                     sub_frame_full.grid(row=grid_row, column=0, columnspan=6, sticky="ew", padx=4, pady=3)  # (20)
                     lbl = tk.Label(sub_frame_full, text=field, font=("Arial", 9, "italic"), bg=bg_color, fg="#333333")  # (20)
                     lbl.pack(anchor="w")  # (20)
-                    entry = tk.Entry(sub_frame_full, font=("Arial", 10), bd=1, relief=tk.GROOVE)  # (20)
+                    # текст в полях вертикальных карточек
+                    entry = tk.Entry(sub_frame_full, font=("Arial", 10, "bold"), bd=1, relief=tk.GROOVE, fg="#000055")  # (20)
+
                     val = data_dict.get(field, "")  # (20)
                     entry.insert(0, str(val) if pd.notna(val) else "")  # (20)
                     entry.config(state="readonly")  # (20)
@@ -835,7 +1105,9 @@ if __name__ == "__main__":
     # 1. Запоминаем хэш файла ДО запуска программы
     start_hash = get_file_hash(FILE_NAME)
     # 2. Делаем обязательный бэкап при старте (как у вас и было)
-    create_backup(FILE_NAME)
+    res = create_backup([FILE_NAME, SUB_FILE_NAME])
+    if res:
+        print(f"Успешно создан бэкап: {res}")
 
     root = tk.Tk()
     app = VoyageAppTabs(root)

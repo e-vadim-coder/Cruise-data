@@ -9,6 +9,7 @@ import tempfile
 import glob
 from datetime import datetime, timedelta
 import hashlib
+import time
 
 DICTIONARIES = {  # (0)
     "Судно": [
@@ -30,7 +31,8 @@ DICTIONARIES = {  # (0)
         "Данченков А.Р.",
         "Дорохова Е.В.",
         "Фрей Д.И.",
-        "Баширова Л.Д."
+        "Баширова Л.Д.",
+        "Ульянова М.О."
     ],  # (4)
     "Начальник отряда геофизики": [  # (4)
         "Дорохов Д.В.",  # (8)
@@ -42,7 +44,8 @@ DICTIONARIES = {  # (0)
         "Пономаренко Е.П.",
         "Сергеев А.Ю.",
         "Луговой Н.Н.",
-        "Матуль А.Г."
+        "Матуль А.Г.",
+        "Сухих Е.А."
     ],  # (4)
     "Начальник отряда сейсмических исследований": [  # (4)
         "Ежов В.Е.",  # (8)
@@ -52,18 +55,32 @@ DICTIONARIES = {  # (0)
     "Район исследования": ["Баренцево море", "SEB", "FZ", "Балтийское море", "Атлантика"],  # (4)
     "Тип данных": ["ОЛЭ", "МЛЭ", "Профилограф", "ГЛБО", "ADCP", "SADCP", "Сейсмокоса"],  # (4)
     "Прибор": [
-        "Konsberg EA-400",
-        "EA-600",
+        "Kongsberg Simrad EA400",
+        "Kongsberg Simrad EA600",
         "Reson SeaBat T50",
         "Reson SeaBat 8111",
         "Reson SeaBat 7150",
         "EdgeTech 3300-HM",
         "Parasound P70",
         "Benthos C3D",
-        "SES2000"
+        "SES2000",
+        "SyQuest Bathy-2010 "
     ],  # (4)
     "Степень обработки": ["Необработанные", "Обработанные", "Сырые и обработанные"],  # (4)
-    "Формат файла": ["ASD, SEG-Y","JSF, SEG-Y", "PDS2000",  "Hypack project", "Qinsy project", "ASCII", "DTM", "GeoTiff", "SEG-Y", "RAW", "SES2000"],  # (4)
+    "Формат файла": [
+        "ASD, SEG-Y",
+        "JSF, SEG-Y",
+        "PDS2000 project",
+        "GIS project",
+        "Hypack project",
+        "Qinsy project",
+        "ASCII",
+        "DTM",
+        "GeoTiff",
+        "SEG-Y",
+        "RAW",
+        "SES2000"
+    ],  # (4)
 }  # (0)
 
 TABS_CONFIG = {  # (0)
@@ -116,6 +133,7 @@ FIELDS_CONFIG = {
     "Степень обработки": str,
     "Формат файла": str,
     "Объем данных": str,
+    "UID": str
 }
 
 # Словарь сокращений только для шапки Treeview
@@ -133,66 +151,6 @@ TABLE_HEADINGS_SHORT = {
     # Для остальных полей, которых нет в словаре, программа автоматически оставит полное название
 }
 
-def create_backup(file_path: str, backup_dir: str = "backups", max_backups: int = 50) -> bool:
-    """
-    Создает сжатую zip-копию файла данных, сохраняет в указанную директорию
-    и удаляет старые копии, оставляя только N последних.
-    """
-    # Особое условие проекта: Обязательная проверка типов передаваемых параметров
-    if not isinstance(file_path, str):
-        raise TypeError("Параметр file_path должен быть строкой.")
-    if not isinstance(backup_dir, str):
-        raise TypeError("Параметр backup_dir должен быть строкой.")
-    if not isinstance(max_backups, int):
-        raise TypeError("Параметр max_backups должен быть целым числом.")
-
-    # Если исходный файл данных еще не создан (например, самый первый запуск), выходим
-    if not os.path.exists(file_path):
-        print(f"Исходный файл {file_path} не найден. Резервная копия не создана.")
-        return False
-
-    try:
-        # Создаем папку для бэкапов, если её нет
-        if not os.path.exists(backup_dir):
-            os.makedirs(backup_dir)
-
-        # Формируем имя архива: voyage_data_20261025_143005.zip
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_name = os.path.splitext(os.path.basename(file_path))[0]
-        zip_filename = f"{base_name}_{timestamp}.zip"
-        zip_filepath = os.path.join(backup_dir, zip_filename)
-
-        # Сжимаем файл в ZIP-архив
-        with zipfile.ZipFile(zip_filepath, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            # os.path.basename(file_path) нужен, чтобы внутри zip файл лежал без путей
-            zipf.write(file_path, arcname=os.path.basename(file_path))
-
-        print(f"Резервная копия успешно создана: {zip_filepath}")
-
-        # Очистка старых копий: ищем все .zip файлы шаблона 'имя_*.zip' в папке бэкапов
-        search_pattern = os.path.join(backup_dir, f"{base_name}_*.zip")
-        backup_files = glob.glob(search_pattern)
-
-        # Сортируем файлы по времени изменения (mtime) от самых старых к самым новым
-        backup_files.sort(key=os.path.getmtime)
-
-        # Если копий больше, чем разрешено, удаляем самые старые
-        if len(backup_files) > max_backups:
-            files_to_delete = backup_files[:-max_backups]  # Все, кроме последних N
-            for old_file in files_to_delete:
-                try:
-                    os.remove(old_file)
-                    print(f"Старая резервная копия удалена: {old_file}")
-                except Exception as e:
-                    print(f"Не удалось удалить старый файл {old_file}: {e}")
-
-        return True
-
-    except Exception as e:
-        print(f"Ошибка при создании резервной копии: {e}")
-        return False
-
-
 def validate_type(value: str, expected_type: type) -> bool:
     """Проверяет соответствие строкового значения ожидаемому типу данных."""
     if not isinstance(expected_type, type) or not isinstance(value, str):
@@ -204,6 +162,24 @@ def validate_type(value: str, expected_type: type) -> bool:
     return True
 
 
+def calculate_safe_row_uid(row: dict) -> str:
+    """
+    Отдельная независимая функция.
+    Безопасно вычисляет UID: если научные поля пустые, возвращает маркер 'empty_'.
+    Если поля заполнены — вызывает вашу родную генерацию хэш-суммы.
+    """
+    pp = str(row.get("№ п/п", "")).strip()
+    vessel = str(row.get("Судно", "")).strip()
+    voyage = str(row.get("№ рейса", "")).strip()
+    year = str(row.get("Год", "")).strip()
+
+    # Если ключевые поля пустые, не считаем кривой хэш-сироту
+    if not vessel or not voyage or not year or vessel == "nan" or year == "nan":
+        return f"empty_{pp}"
+
+    # Если поля заполнены — вызываем оригинальный метод хэш-суммы
+    return generate_row_uid(row)
+
 def load_data(file_name: str) -> pd.DataFrame:
     """Загружает данные из Excel файла."""
     if not isinstance(file_name, str):
@@ -211,12 +187,36 @@ def load_data(file_name: str) -> pd.DataFrame:
     if os.path.exists(file_name):
         try:
             df = pd.read_excel(file_name)
-            for col, t in FIELDS_CONFIG.items():
+            # --- УНИВЕРСАЛЬНОЕ ПРИВЕДЕНИЕ ТИПОВ ДЛЯ ОБОИХ ФАЙЛОВ EXCEL ---
+            # Автоматически выбираем нужную конфигурацию полей
+            current_config = SUB_TABLE_FIELDS if "UID_Родителя" in df.columns else FIELDS_CONFIG
+            for col, t in current_config.items():
                 if col in df.columns:
                     if t is int:
-                        df[col] = df[col].fillna(0).astype(float).astype(int)
+                        # Принудительно очищаем от NaN и переводим в целые числа
+                        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
                     else:
-                        df[col] = df[col].fillna("").astype(str)
+                        # Намертво глушим float64 в текстовых колонках, превращая всё в чистые строки
+                        df[col] = df[col].fillna("").astype(str).str.strip()
+            # -------------------------------------------------------------
+            # --- БЕЗОПАСНЫЙ И УМНЫЙ ПЕРЕСЧЕТ КЛЮЧЕЙ UID ---
+            # Проверяем, какая именно таблица сейчас загружается программой
+            if "UID_Родителя" in df.columns:
+                # Для подчиненной таблицы: ВСЕГДА жестко и принудительно пересчитываем UID.
+                # Формула: берем UID_Родителя этой строки и прибавляем к нему её физический номер (idx)
+                df["UID"] = [f"{str(row['UID_Родителя'])}__sub_{idx}" for idx, row in df.iterrows()]
+            else:
+                # Для основной таблицы рейсов: пересчитываем UID только для пустых или новых строк
+                if "UID" not in df.columns:
+                    df["UID"] = [calculate_safe_row_uid(row) for _, row in df.iterrows()]
+                else:
+                    df["UID"] = df["UID"].fillna("")
+                    for idx, row in df.iterrows():
+                        current_uid = str(row["UID"]).strip()
+                        if not current_uid or current_uid in ("", "nan", "empty_"):
+                            df.at[idx, "UID"] = calculate_safe_row_uid(row)
+            # --- КОНЕЦ ИСПРАВЛЕНИЯ В HELPERS.PY ---
+
             return df
         except Exception:
             return pd.DataFrame(columns=list(FIELDS_CONFIG.keys()))
@@ -369,85 +369,177 @@ def get_file_hash(file_path: str) -> str:
         return ""
 
 
-def clean_duplicate_backups(backup_dir="backups", target_filename="voyage_data.xlsx", days_interval=10):
-    """
-    Проверяет дату последней очистки по файлу-маркеру. Если прошло >= days_interval дней,
-    распаковывает архивы во временную папку, вычисляет хэш вложенного Excel-файла
-    и удаляет дубликаты, освобождая их из памяти перед удалением (фикс WinError 32).
-    """
-    marker_file = os.path.join(backup_dir, ".last_clean.txt")
-    now = datetime.now()
+MAX_BACKUPS = 50
+CLEAN_INTERVAL_DAYS = 10
+LAST_CLEAN_FILE = os.path.join("backups", ".last_clean")
 
-    # Проверяем и создаем папку бэкапов, если её нет
+def get_file_hash(file_path):
+    hasher = hashlib.md5()
+    try:
+        with open(file_path, 'rb') as f:
+            buf = f.read()
+            hasher.update(buf)
+        return hasher.hexdigest()
+    except Exception:
+        return ""
+
+def create_backup(file_paths, backup_dir="backups"):
+    """
+    Создает архив с простым именем 'backup_дата_время.zip' для всех файлов из списка.
+    Если файлы не менялись, дубликат по хэшу не создается.
+    """
     if not os.path.exists(backup_dir):
         os.makedirs(backup_dir)
 
-    # Логика контроля интервала (не чаще чем раз в 10 дней)
-    if os.path.exists(marker_file):
-        try:
-            with open(marker_file, "r") as f:
-                last_clean_str = f.read().strip()
-                last_clean_date = datetime.strptime(last_clean_str, "%Y-%m-%d")
+    existing_files = [f for f in file_paths if os.path.exists(f)]
+    if not existing_files:
+        return ""
 
-            # Если 10 дней еще не прошло — тихо выходим, не нагружая процессор
-            if now - last_clean_date < timedelta(days=days_interval):
-                return
-        except Exception:
-            # Если маркер поврежден, игнорируем ошибку и проводим уборку
-            pass
+    # Имя архива теперь простое и понятное, без имени таблиц
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    zip_name = os.path.join(backup_dir, f"backup_{timestamp}.zip")
 
-    # Находим все zip-архивы и сортируем их от новых к старым
-    backup_files = glob.glob(os.path.join(backup_dir, "*.zip"))
-    backup_files.sort(key=os.path.getmtime, reverse=True)
+    try:
+        with zipfile.ZipFile(zip_name, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for file_path in existing_files:
+                zipf.write(file_path, os.path.basename(file_path))
+        return zip_name
+    except Exception as e:
+        print(f"Ошибка создания бэкапа: {e}")
+        return ""
 
-    if not backup_files:
+
+def clean_duplicate_backups(backup_dir="backups"):
+    """
+    Очистка папки бэкапов. Раз в 10 дней наводит порядок, удаляет дубликаты
+    по хэшу и избыток по количеству, выводя отчет в консоль.
+    """
+    if not os.path.exists(backup_dir):
         return
 
+    current_date = datetime.now()
+    deleted_count = 0  # Счётчик удалённых файлов
+
+    # ПРОВЕРКА МЕТКИ ПО ПОНЯТНОЙ ДАТЕ
+    if os.path.exists(LAST_CLEAN_FILE):
+        try:
+            with open(LAST_CLEAN_FILE, 'r') as f:
+                last_clean_str = f.read().strip()
+            last_clean_date = datetime.strptime(last_clean_str, "%Y-%m-%d")
+
+            days_passed = (current_date - last_clean_date).days
+            if days_passed < CLEAN_INTERVAL_DAYS:
+                return  # 10 дней еще не прошло, уходим
+        except Exception:
+            pass
+
+    # ПОИСК И УДАЛЕНИЕ ДУБЛИКАТОВ ПО ХЭШУ
+    zips = glob.glob(os.path.join(backup_dir, "*.zip"))
+    zips.sort(key=os.path.getmtime)
+
     seen_hashes = set()
-    deleted_count = 0
-
-    # Создаем изолированную временную папку для распаковки
-    with tempfile.TemporaryDirectory() as temp_dir:
-        for archive_path in backup_files:
-            file_hash = None
-
+    unique_zips = []
+    for old_zip in zips:
+        h = get_file_hash(old_zip)
+        if h in seen_hashes:
             try:
-                # 1. Открываем архив строго для извлечения файла и расчета хэша
-                with zipfile.ZipFile(archive_path, 'r') as zip_ref:
-                    if target_filename in zip_ref.namelist():
-                        zip_ref.extract(target_filename, path=temp_dir)
-                        extracted_file_path = os.path.join(temp_dir, target_filename)
+                os.remove(old_zip)
+                deleted_count += 1  # Увеличиваем счётчик при удалении хэш-дубликата
+            except Exception:
+                pass
+        else:
+            seen_hashes.add(h)
+            unique_zips.append(old_zip)
 
-                        # Вычисляем хэш функцией из helpers.py
-                        file_hash = get_file_hash(extracted_file_path)
+    # ОГРАНИЧЕНИЕ ПО КОЛИЧЕСТВУ (оставляем последние MAX_BACKUPS)
+    if len(unique_zips) > MAX_BACKUPS:
+        for old_zip in unique_zips[:-MAX_BACKUPS]:
+            try:
+                os.remove(old_zip)
+                deleted_count += 1  # Увеличиваем счётчик при удалении лишнего по количеству
+            except Exception:
+                pass
 
-                        # Сразу удаляем временный Excel-файл из temp-папки
-                        os.remove(extracted_file_path)
-                    else:
-                        print(f"Внимание: файл {target_filename} не найден в {os.path.basename(archive_path)}")
-            except Exception as e:
-                print(f"Ошибка при чтении архива {os.path.basename(archive_path)}: {e}")
-                continue
+    # ВЫВОД СООБЩЕНИЯ ОБ ОЧИСТКЕ
+    if deleted_count > 0:
+        print(f"[ОЧИСТКА] Обнаружен день плановой проверки. Удалено устаревших бэкапов: {deleted_count} шт.")
+    else:
+        print("[ОЧИСТКА] День плановой проверки: папка бэкапов уже в идеальном состоянии.")
 
-            # 2. ВАЖНО: Мы вышли из блока 'with'. Архив гарантированно закрыт!
-            # Теперь Windows не заблокирует файл, и его можно безопасно удалить.
-            if file_hash is not None:
-                if file_hash in seen_hashes:
-                    try:
-                        os.remove(archive_path)
-                        print(f"Удален дубликат бэкапа (идентичные данные): {os.path.basename(archive_path)}")
-                        deleted_count += 1
-                    except Exception as e:
-                        print(f"Не удалось удалить файл {os.path.basename(archive_path)}: {e}")
-                else:
-                    # Если хэш уникальный (данные новые) — запоминаем его
-                    seen_hashes.add(file_hash)
-
-    # Обновляем дату в файле-маркере, чтобы зафиксировать успешную уборку
+    # ЗАПИСЬ СВЕЖЕЙ ПОНЯТНОЙ ДАТЫ В МЕТКУ
     try:
-        with open(marker_file, "w") as f:
-            f.write(now.strftime("%Y-%m-%d"))
-        if deleted_count > 0:
-            print(f"Генеральная уборка завершена. Удалено дубликатов: {deleted_count}. Следующая через {days_interval} дней.")
-    except Exception as e:
-        print(f"Не удалось обновить маркер очистки: {e}")
+        with open(LAST_CLEAN_FILE, 'w') as f:
+            f.write(current_date.strftime("%Y-%m-%d"))
+    except Exception:
+        pass
+
+
+# =====================================================================
+# КОНФИГУРАЦИЯ ПОДЧИНЁННОЙ ТАБЛИЦЫ (Учёт каталогов и метаданных)
+# =====================================================================
+
+SUB_FILE_NAME = "voyage_sub_data.xlsx"
+
+SUB_TABLE_FIELDS = {
+    "UID_Родителя"                  : str,  # Внешний ключ для связи
+    "каталоги"                      : str,  # Путь к каталогу с данными
+    "наличие метаданных"            : int,  # 0 или 1
+    "метаданные добавлены в БМД ЛГА": int,  # 0 или 1
+    "Наличие 2-ой копии данных"     : int,  # 0 или 1
+    "№ диска с копией"              : int,  # Номер диска (число)
+    "каталоги с копией"             : str  # Путь к каталогу с копией
+}
+
+SUB_TABLE_HEADINGS_SHORT = {
+    "UID_Родителя"                  : "Ключ связи",
+    "каталоги"                      : "Каталоги (исходные)",
+    "наличие метаданных"            : "Наличие МД",
+    "метаданные добавлены в БМД ЛГА": "В БМД ЛГА",
+    "Наличие 2-ой копии данных"     : "2-я копия",
+    "№ диска с копией"              : "№ диска копии",
+    "каталоги с копией"             : "Каталоги копии"
+}
+
+
+def generate_row_uid(row_dict: dict) -> str:
+    """Генерирует иммунный к сортировкам UID на основе ключевых полей рейса."""
+    pp = str(row_dict.get("№ п/п", "0")).split('.')[0]  # убираем .0 если есть
+    vessel = str(row_dict.get("Судно", "")).strip()
+    voyage_num = str(row_dict.get("№ рейса", "")).split('.')[0]
+    year = str(row_dict.get("Год", "")).split('.')[0]
+
+    basis_string = f"{pp}_{vessel}_{voyage_num}_{year}"
+    hash_sha = hashlib.md5(basis_string.encode("utf-8")).hexdigest()[:8]
+
+    return f"{pp}_{hash_sha}"
+
+
+def check_and_clean_relations(main_df, sub_df):
+    """
+    Проверяет целостность связей между основной и подчиненной таблицами.
+    Удаляет записи-сироты из подчиненной таблицы, у которых нет родителя.
+    """
+    if main_df.empty or sub_df.empty:
+        return sub_df
+
+    # 1. Извлекаем список всех реально существующих UID из основной таблицы рейсов
+    # (Если вы еще не перешли на физическую колонку "UID", используйте "id" / "№ п/п")
+    existing_parent_keys = set(main_df["UID"].dropna().astype(str)) if "UID" in main_df.columns else set(main_df["id"].dropna().astype(str))
+
+    # Определяем имя колонки связи в подчиненной таблице
+    sub_key_col = "UID_Родителя" if "UID_Родителя" in sub_df.columns else "№ п/п"
+
+    # 2. Фильтруем подчиненную таблицу: оставляем ТОЛЬКО те строки,
+    # чей ключ связи действительно присутствует в списке существующих рейсов
+    initial_count = len(sub_df)
+
+    # Дополнительно очищаем строки с пустыми или некорректными индексами связи
+    sub_df_cleaned = sub_df[
+        sub_df[sub_key_col].dropna().astype(str).isin(existing_parent_keys)
+    ].reset_index(drop=True)
+
+    removed_count = initial_count - len(sub_df_cleaned)
+    if removed_count > 0:
+        print(f"[Контроль целостности]: Обнаружено и удалено {removed_count} записей-сирот из подчиненной таблицы.")
+
+    return sub_df_cleaned
