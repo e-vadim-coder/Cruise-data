@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 # main.py
 import tkinter as tk  # (0)
-from tkinter import filedialog, font, messagebox, ttk  # (0)
 import pandas as pd  # (0)
-
+from tkinter import filedialog, font, messagebox, ttk  # (0)
 from helpers import (  # (0)
     FIELDS_CONFIG,  # (4)
     DICTIONARIES,
@@ -23,6 +22,7 @@ from helpers import (  # (0)
     SUB_FILE_NAME,
     SUB_TABLE_FIELDS,
     SUB_TABLE_HEADINGS_SHORT,
+    check_and_clean_relations,
     generate_row_uid
 )  # (0)
 
@@ -42,7 +42,7 @@ class VoyageAppTabs:  # (0)
         self.sub_df = load_data(SUB_FILE_NAME)
 
         # Автоматическая проверка и очистка сирот при старте программы
-        from helpers import check_and_clean_relations
+        # from helpers import check_and_clean_relations
         self.sub_df = check_and_clean_relations(self.df, self.sub_df)
         # Сразу сохраняем чистый результат на диск, если что-то было удалено
         save_data(self.sub_df, SUB_FILE_NAME)
@@ -1123,7 +1123,9 @@ if __name__ == "__main__":
         # Если хэши разные — значит, пользователь вносил изменения или сохранял данные
         if start_hash != end_hash:
             print("Обнаружены изменения в базе данных. Создается финальный бэкап...")
-            create_backup(FILE_NAME)
+            res2 = create_backup([FILE_NAME, SUB_FILE_NAME])
+            if res2:
+                print(f"Успешно создан бэкап: {res2}")
         else:
             print("Изменений не было. Финальный бэкап пропущен.")
 

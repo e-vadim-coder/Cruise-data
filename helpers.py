@@ -2,7 +2,7 @@
 # helpers.py
 import os
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import pandas as pd
 import zipfile
 import tempfile
@@ -227,7 +227,7 @@ def save_data(df: pd.DataFrame, file_name: str) -> None:
     """Сохраняет DataFrame в Excel с защитой от блокировки файла."""
     if not isinstance(df, pd.DataFrame) or not isinstance(file_name, str):
         raise TypeError("Неверные типы параметров в процедуре save_data.")
-    from tkinter import messagebox
+    # from tkinter import messagebox
 
     while True:
         try:
@@ -307,13 +307,13 @@ def export_to_txt(df: pd.DataFrame, target_file_path: str) -> None:
                     f.write(f"{col}: {val}\n")
                 f.write("\n" + "." * 40 + "\n\n")
     except Exception as e:
-        from tkinter import messagebox
-
+        # from tkinter import messagebox
         messagebox.showerror("Ошибка", f"Не удалось записать отчет:\n{str(e)}")
 
 def get_card_context(df, current_index: int) -> dict:  # (0)
     """Определяет данные для 3-х карточек режима «Детальный просмотр»."""  # (4)
-    import pandas as pd  # (4)
+
+    # import pandas as pd  # (4)
     if not isinstance(df, pd.DataFrame):  # (4)
         raise TypeError("Параметр 'df' должен быть объектом класса pandas.DataFrame")  # (8)
     if not isinstance(current_index, int):  # (4)
