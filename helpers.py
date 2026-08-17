@@ -11,6 +11,10 @@ from datetime import datetime, timedelta
 import hashlib
 import time
 
+MAX_BACKUPS = 50
+CLEAN_INTERVAL_DAYS = 10
+LAST_CLEAN_FILE = os.path.join("backups", ".last_clean")
+
 DICTIONARIES = {  # (0)
     "Судно": [
         "Академик Николай Страхов",
@@ -281,6 +285,15 @@ def is_exact_match(new_data: dict, template_row: pd.Series) -> bool:
     return True
 
 
+def _fmt_report_value(v):
+    """Форматирует значение ячейки для текстового отчета без искажений."""
+    if pd.isna(v):
+        return ""
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v)
+
+
 def export_to_txt(df: pd.DataFrame, target_file_path: str) -> None:
     """Генерирует текстовый отчет на основе переданного DataFrame."""
     if not isinstance(df, pd.DataFrame) or not isinstance(
@@ -299,11 +312,7 @@ def export_to_txt(df: pd.DataFrame, target_file_path: str) -> None:
             for idx, row in df.iterrows():
                 f.write(f"--- ЗАПИСЬ № {idx + 1} ---\n")
                 for col in df.columns:
-                    val = (
-                        ""
-                        if pd.isna(row[col])
-                        else str(row[col]).replace(".0", "")
-                    )
+                    val = _fmt_report_value(row[col])
                     f.write(f"{col}: {val}\n")
                 f.write("\n" + "." * 40 + "\n\n")
     except Exception as e:
@@ -368,20 +377,6 @@ def get_file_hash(file_path: str) -> str:
     except Exception:
         return ""
 
-
-MAX_BACKUPS = 50
-CLEAN_INTERVAL_DAYS = 10
-LAST_CLEAN_FILE = os.path.join("backups", ".last_clean")
-
-def get_file_hash(file_path):
-    hasher = hashlib.md5()
-    try:
-        with open(file_path, 'rb') as f:
-            buf = f.read()
-            hasher.update(buf)
-        return hasher.hexdigest()
-    except Exception:
-        return ""
 
 def create_backup(file_paths, backup_dir="backups"):
     """

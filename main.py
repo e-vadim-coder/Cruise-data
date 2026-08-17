@@ -1057,7 +1057,7 @@ class DetailViewWindow:  # (0)
                                              f"Поле '{field}' должно содержать только целое число!")  # (24)
                         return  # (24)
                 else:  # (16)
-                    updated_row[field] = np.nan  # (20) Поле не обязательно к заполнению
+                    updated_row[field] = float('nan')  # (20) Поле не обязательно к заполнению
             else:  # (12)
                 updated_row[field] = val  # (16) Для всех текстовых полей оставляем как есть
 
@@ -1102,9 +1102,7 @@ class DetailViewWindow:  # (0)
 
 
 if __name__ == "__main__":
-    # 1. Запоминаем хэш файла ДО запуска программы
-    start_hash = get_file_hash(FILE_NAME)
-    # 2. Делаем обязательный бэкап при старте (как у вас и было)
+    # 1. Делаем обязательный бэкап при старте (как у вас и было)
     res = create_backup([FILE_NAME, SUB_FILE_NAME])
     if res:
         print(f"Успешно создан бэкап: {res}")
@@ -1112,16 +1110,25 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = VoyageAppTabs(root)
 
+    # 2. Снимок состояния ОБОИХ файлов после стартовой обработки
+    start_hashes = {
+        FILE_NAME: get_file_hash(FILE_NAME),
+        SUB_FILE_NAME: get_file_hash(SUB_FILE_NAME),
+    }
+
     # Функция безопасного закрытия
     def on_closing():
         # Отключаем перехватчик, чтобы избежать зацикливания при закрытии
         root.protocol("WM_DELETE_WINDOW", lambda: None)
 
-        # 3. Проверяем хэш файла в момент закрытия
-        end_hash = get_file_hash(FILE_NAME)
+        # 3. Сравниваем хэши обоих файлов в момент закрытия
+        changed = any(
+            get_file_hash(name) != start_hashes[name]
+            for name in (FILE_NAME, SUB_FILE_NAME)
+        )
 
         # Если хэши разные — значит, пользователь вносил изменения или сохранял данные
-        if start_hash != end_hash:
+        if changed:
             print("Обнаружены изменения в базе данных. Создается финальный бэкап...")
             res2 = create_backup([FILE_NAME, SUB_FILE_NAME])
             if res2:
