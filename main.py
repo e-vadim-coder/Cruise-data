@@ -5,6 +5,7 @@ import pandas as pd  # (0)
 from tkinter import filedialog, font, messagebox, ttk  # (0)
 from helpers import (  # (0)
     FIELDS_CONFIG,  # (4)
+    apply_field_type,
     DICTIONARIES,
     TABS_CONFIG,
     TABLE_HEADINGS_SHORT,
@@ -13,7 +14,7 @@ from helpers import (  # (0)
     get_file_hash,
     delete_row_from_df,  # (4)
     export_to_txt,  # (4)
-    is_exact_match,  # (4)
+    find_full_duplicate,
     load_data,  # (4)
     reset_form_fields,  # (4)
     save_data,  # (4)
@@ -27,6 +28,21 @@ from helpers import (  # (0)
 )  # (0)
 
 FILE_NAME = "voyage_data.xlsx"  # (0)
+
+
+def _save_with_retry(df, file_name):
+    """Сохраняет DataFrame с диалогом «Повторить/Отмена» при блокировке файла.
+    Возвращает True, если сохранение удалось, иначе False."""
+    while True:
+        try:
+            save_data(df, file_name)
+            return True
+        except PermissionError:
+            if not messagebox.askretrycancel(
+                "Ошибка доступа",
+                f"Файл '{file_name}' открыт в Excel.\n\nПожалуйста, закройте его и нажмите 'Повторить'.",
+            ):
+                return False
 
 
 class VoyageAppTabs:  # (0)
@@ -45,13 +61,12 @@ class VoyageAppTabs:  # (0)
         # from helpers import check_and_clean_relations
         self.sub_df = check_and_clean_relations(self.df, self.sub_df)
         # Сразу сохраняем чистый результат на диск, если что-то было удалено
-        save_data(self.sub_df, SUB_FILE_NAME)
+        _save_with_retry(self.sub_df, SUB_FILE_NAME)
 
         if self.sub_df.empty or "UID_Родителя" not in self.sub_df.columns:
             self.sub_df = pd.DataFrame(columns=list(SUB_TABLE_FIELDS.keys()))
 
         self.selected_index = None  # (8)
-        self.template_index = None  # (8)
         self.inputs = {}  # (8)
 
         self.btn_colors = {  # (8)
@@ -65,6 +80,7 @@ class VoyageAppTabs:  # (0)
         }  # (8)
 
         self.create_widgets()  # (8)
+        self.recompute_column_widths()  # (8)
         self.refresh_table()  # (8)
         self.tree.bind("<<TreeviewSelect>>", self.on_row_select)  # (8)
         self.sub_table_visible = False  # По умолчанию скрыта
@@ -299,12 +315,7 @@ class VoyageAppTabs:  # (0)
         # Собираем измененные данные из полей ввода
         updated_row = {}
         for field, entry in self.sub_inputs.items():
-            val = entry.get().strip()
-            # Валидация числовых полей
-            if SUB_TABLE_FIELDS[field] is int:
-                updated_row[field] = int(val) if (val.isdigit() or (val.startswith('-') and val[1:].isdigit())) else 0
-            else:
-                updated_row[field] = val
+            updated_row[field] = apply_field_type(entry.get(), SUB_TABLE_FIELDS[field])
 
         try:
             # Нам КРИТИЧЕСКИ важно оставить старые UID и UID_Родителя неизменными,
@@ -321,7 +332,9 @@ class VoyageAppTabs:  # (0)
             self.sub_df.at[self.selected_sub_index, "UID_Родителя"] = old_parent_uid
 
             # Физически сохраняем файл на диск
-            save_data(self.sub_df, SUB_FILE_NAME)
+            if not _save_with_retry(self.sub_df, SUB_FILE_NAME):
+                messagebox.showerror("Ошибка", "Не удалось сохранить изменения: файл открыт в Excel.")
+                return
 
             # Очищаем нижние поля ввода
             for entry in self.sub_inputs.values():
@@ -391,6 +404,22 @@ class VoyageAppTabs:  # (0)
                 return False  # (16)
         return True  # (8)
 
+    def recompute_column_widths(self):
+        """Пересчитывает ширину колонок по содержимому self.df и кэширует её."""
+        tk_font = font.Font(font="TkDefaultFont")  # (8)
+        widths = {}
+        for field in FIELDS_CONFIG.keys():  # (8)
+            short_text = TABLE_HEADINGS_SHORT.get(field, field)
+            max_len = tk_font.measure(str(short_text)) + 25
+            if not self.df.empty and field in self.df.columns:  # (12)
+                max_val = max(
+                    (tk_font.measure(str("" if pd.isna(val) else val)) for val in self.df[field]),
+                    default=0,
+                )
+                max_len = max(max_len, max_val + 15)  # (12)
+            widths[field] = min(max(max_len, 50), 113)  # (12)
+        self.col_widths = widths
+
     def refresh_table(self, dataframe: pd.DataFrame = None):  # (4)
         for item in self.tree.get_children():  # (8)
             self.tree.delete(item)  # (12)
@@ -402,29 +431,8 @@ class VoyageAppTabs:  # (0)
             values = ["" if pd.isna(val) else val for val in row]  # (12)
             self.tree.insert("", "end", iid=str(idx), values=values)  # (12)
 
-        # 2. Настраиваем автоподбор ширины колонок
-        # Берем стандартный шрифт интерфейса для точного расчета пикселей
-        tk_font = font.Font(font="TkDefaultFont")  # (8)
-
-        for field in FIELDS_CONFIG.keys():  # (8)
-            # Измеряем длину заголовка колонки (+ запас на стрелочку сортировки)
-            # max_len = tk_font.measure(str(field)) + 25  # (12)
-            short_text = TABLE_HEADINGS_SHORT.get(field, field)
-            max_len = tk_font.measure(str(short_text)) + 25
-
-            # Если в таблице есть данные, ищем самую длинную строку в текущей колонке
-            if not display_df.empty:  # (12)
-                # Переводим все значения колонки в текст и находим макс. длину в пикселях
-                col_lens = [  # (16)
-                    tk_font.measure(str("" if pd.isna(val) else val))  # (20)
-                    for val in display_df[field]  # (20)
-                ]  # (16)
-                max_len = max(max_len, max(col_lens) + 15)  # (16)
-
-            # Ограничиваем минимальную и максимальную ширину для красоты (от 70 до 350 пикселей)
-            final_width = min(max(max_len, 50), 113)  # (12)
-
-            # Применяем вычисленную ширину к колонке
+        # 2. Применяем заранее рассчитанную ширину колонок (без повторных замеров)
+        for field, final_width in self.col_widths.items():
             self.tree.column(field, width=final_width, anchor="center", stretch=False, minwidth=final_width)  # (12)
 
     def on_row_select(self, event):
@@ -437,7 +445,6 @@ class VoyageAppTabs:  # (0)
 
         tree_id = selected_items[0]
         self.selected_index = int(tree_id)
-        self.template_index = None
 
         row_data = self.df.loc[self.selected_index].to_dict()
 
@@ -507,9 +514,12 @@ class VoyageAppTabs:  # (0)
         self.df.loc[new_index] = template_row  # (12)
 
         # Синхронно сохраняем обновленную таблицу на диск в Excel
-        save_data(self.df, FILE_NAME)
+        if not _save_with_retry(self.df, FILE_NAME):
+            messagebox.showerror("Ошибка", "Не удалось сохранить файл. Запись не создана.")
+            return
 
         # Обновляем таблицу на экране
+        self.recompute_column_widths()
         self.refresh_table()  # (12)
 
         # Сценарий 2: Пользователь нажал «Да» — открываем карточку детального просмотра
@@ -523,35 +533,26 @@ class VoyageAppTabs:  # (0)
     def clear_form(self):  # (4)
         reset_form_fields(self.inputs)  # (8)
         self.selected_index = None  # (8)
-        self.template_index = None  # (8)
         self.refresh_table()  # (8)
 
     def add_data(self):  # (4)
         data = self.get_form_values()  # (8)
         if not self.validate_form_data(data):  # (8)
             return  # (12)
-        if self.template_index is not None:  # (8)
-            template_row = self.df.loc[self.template_index]  # (12)
-            if is_exact_match(data, template_row):  # (12)
-                messagebox.showerror(  # (16)
-                    "Ошибка дубликата",  # (20)
-                    "Новая запись полностью совпадает с шаблоном! Измените поле.",  # (20)
-                )  # (16)
-                return  # (16)
-        processed_data = {}  # (8)
-        for k, v in data.items():  # (8)
-            if FIELDS_CONFIG[k] is int and v != "":  # (12)
-                processed_data[k] = int(v)  # (16)
-            else:  # (12)
-                processed_data[k] = v  # (16)
+        processed_data = {
+            k: apply_field_type(v, FIELDS_CONFIG[k])
+            for k, v in data.items()
+        }
         self.df = pd.concat(  # (8)
             [self.df, pd.DataFrame([processed_data])], ignore_index=True  # (12)
         )  # (8)
-        save_data(self.df, FILE_NAME)  # (8)
+        if not _save_with_retry(self.df, FILE_NAME):
+            messagebox.showerror("Ошибка", "Не удалось сохранить файл. Запись не создана.")
+            return
+        self.recompute_column_widths()
         self.refresh_table()  # (8)
         self.clear_form()  # (8)
         messagebox.showinfo("Готово", "Запись успешно создана!")  # (8)
-
     def update_data(self):  # (4)
         if self.selected_index is None:  # (8)
             messagebox.showwarning(  # (12)
@@ -564,20 +565,32 @@ class VoyageAppTabs:  # (0)
         if not self.validate_form_data(data):  # (8)
             return  # (12)
 
+        # Проверка на полный дубль: собираем будущую строку и сверяем с остальными
+        candidate = self.df.loc[self.selected_index].to_dict()
+        for k, v in data.items():
+            candidate[k] = apply_field_type(v, FIELDS_CONFIG[k])
+        dup_idx = find_full_duplicate(self.df, candidate, exclude_index=self.selected_index)
+        if dup_idx is not None:
+            messagebox.showerror(
+                "Ошибка дубликата",
+                f"Запись полностью совпадает с записью № {dup_idx + 1}. Измените поле.",
+            )
+            return
+
         # Записываем измененные поля из формы обратно в self.df
         for k, v in data.items():  # (8)
-            if FIELDS_CONFIG[k] is int:  # (12)
-                self.df.at[self.selected_index, k] = int(v) if v != "" else 0  # (16)
-            else:  # (12)
-                self.df.at[self.selected_index, k] = v  # (16)
+            self.df.at[self.selected_index, k] = apply_field_type(v, FIELDS_CONFIG[k])
 
         # Сохраняем обновленный DataFrame в Excel-файл
-        save_data(self.df, FILE_NAME)  # (8)
+        if not _save_with_retry(self.df, FILE_NAME):
+            messagebox.showerror("Ошибка", "Не удалось сохранить файл. Изменения не сохранены.")
+            return
 
         # ВАЖНО: Перечитываем данные из файла, чтобы обновить оперативную память
         self.df = load_data(FILE_NAME)  # (8)
 
         # Перерисовываем таблицу и очищаем форму ввода
+        self.recompute_column_widths()
         self.refresh_table()  # (8)
         self.clear_form()  # (8)
         messagebox.showinfo("Готово", "Изменения успешно сохранены в таблицу и файл!")  # (8)
@@ -599,7 +612,9 @@ class VoyageAppTabs:  # (0)
 
             # ШАГ 1: Сначала удаляем сам рейс из основного DataFrame и сохраняем его на диск
             self.df = delete_row_from_df(self.df, target_index)  # (12)
-            save_data(self.df, FILE_NAME)  # (12)
+            if not _save_with_retry(self.df, FILE_NAME):
+                messagebox.showerror("Ошибка", "Не удалось сохранить файл. Удаление отменено.")
+                return
 
             # ШАГ 2: Принудительно обновляем индексы главной таблицы в памяти,
             # чтобы программа зафиксировала новое состояние базы данных
@@ -614,9 +629,12 @@ class VoyageAppTabs:  # (0)
             self.sub_df = self.sub_df[self.sub_df["UID_Родителя"] != clean_uid].reset_index(drop=True)
 
             # ШАГ 4: Физически записываем очищенную подчиненную таблицу на диск
-            save_data(self.sub_df, SUB_FILE_NAME)
+            if not _save_with_retry(self.sub_df, SUB_FILE_NAME):
+                messagebox.showerror("Ошибка", "Не удалось сохранить файл каталогов.")
+                return
 
             # ШАГ 5: Перерисовываем экран (теперь данные гарантированно не вернутся)
+            self.recompute_column_widths()
             self.refresh_table()
             self.clear_form()
             messagebox.showinfo("Успех", "Запись рейса и все связанные каталоги успешно удалены.")
@@ -703,12 +721,7 @@ class VoyageAppTabs:  # (0)
         # Собираем данные из полей ввода каталогов
         new_row = {"UID_Родителя": parent_uid}
         for field, entry in self.sub_inputs.items():
-            val = entry.get().strip()
-            # Простая валидация типов для чисел
-            if SUB_TABLE_FIELDS[field] is int:
-                new_row[field] = int(val) if (val.isdigit() or (val.startswith('-') and val[1:].isdigit())) else 0
-            else:
-                new_row[field] = val
+            new_row[field] = apply_field_type(entry.get(), SUB_TABLE_FIELDS[field])
         # МГНОВЕННЫЙ РАСЧЕТ СОБСТВЕННОГО UID КАТАЛОГА)
         # Вычисляем следующий физический индекс для новой строки в подчиненной таблице
         next_idx = len(self.sub_df)
@@ -717,7 +730,9 @@ class VoyageAppTabs:  # (0)
 
         # Добавляем в DataFrame и сохраняем файл
         self.sub_df = pd.concat([self.sub_df, pd.DataFrame([new_row])], ignore_index=True)
-        save_data(self.sub_df, SUB_FILE_NAME)
+        if not _save_with_retry(self.sub_df, SUB_FILE_NAME):
+            messagebox.showerror("Ошибка", "Не удалось сохранить файл. Каталог не добавлен.")
+            return
 
         # Очищаем поля ввода дочерней таблицы
         for entry in self.sub_inputs.values():
@@ -736,7 +751,9 @@ class VoyageAppTabs:  # (0)
         target_idx = int(selected_sub[0])
         if messagebox.askyesno("Подтверждение", "Удалить выбранную запись о каталоге?"):
             self.sub_df = self.sub_df.drop(target_idx).reset_index(drop=True)
-            save_data(self.sub_df, SUB_FILE_NAME)
+            if not _save_with_retry(self.sub_df, SUB_FILE_NAME):
+                messagebox.showerror("Ошибка", "Не удалось сохранить файл. Запись не удалена.")
+                return
             self.on_row_select(None)
             messagebox.showinfo("Успех", "Запись удалена.")
 
@@ -1041,44 +1058,44 @@ class DetailViewWindow:  # (0)
     def accept_card_changes(self):
         updated_row = {}  # (8)
 
-        # Списки числовых полей из условий вашей задачи для явного приведения типов
-        int_fields = ["№ п/п", "Год", "№ рейса", "№ этапа рейса", "№ диска", "Инвентарный № диска"]  # (8)
-
         for field, entry in self.center_entries.items():  # (8)
             val = entry.get().strip()  # (12)
 
-            # Если поле должно быть числовым и оно заполнено — переводим в int
-            if field in int_fields:  # (12)
-                if val != "":  # (16)
-                    try:  # (20)
-                        updated_row[field] = int(val)  # (24)
-                    except ValueError:  # (20)
-                        messagebox.showerror("Ошибка типа данных",
-                                             f"Поле '{field}' должно содержать только целое число!")  # (24)
-                        return  # (24)
-                else:  # (16)
+            # Если поле числовое — проверяем и приводим, пустое оставляем как NaN
+            if FIELDS_CONFIG.get(field) is int:  # (12)
+                if val == "":  # (16)
                     updated_row[field] = float('nan')  # (20) Поле не обязательно к заполнению
+                elif val.lstrip('-').isdigit():  # (16)
+                    updated_row[field] = int(val)  # (20)
+                else:  # (16)
+                    messagebox.showerror("Ошибка типа данных",
+                                         f"Поле '{field}' должно содержать только целое число!")  # (20)
+                    return  # (20)
             else:  # (12)
                 updated_row[field] = val  # (16) Для всех текстовых полей оставляем как есть
+
+        # Проверка на полный дубль: собираем будущую строку и сверяем с остальными
+        candidate = self.app.df.loc[self.current_index].to_dict()
+        candidate.update(updated_row)
+        dup_idx = find_full_duplicate(self.app.df, candidate, exclude_index=self.current_index)
+        if dup_idx is not None:
+            messagebox.showerror(
+                "Ошибка дубликата",
+                f"Запись полностью совпадает с записью № {dup_idx + 1}. Измените поле.",
+            )
+            return
 
         # Сохраняем проверенные данные в Pandas DataFrame
         for field, value in updated_row.items():  # (8)
             self.app.df.at[self.current_index, field] = value  # (12)
 
-        # УНИВЕРСАЛЬНОЕ ОБНОВЛЕНИЕ ТАБЛИЦЫ НА ГЛАВНОМ ЭКРАНЕ (без вызова внешних функций)
-        try:  # (8)
-            # 1. Очищаем старые строки в вашей таблице Treeview
-            for item in self.app.tree.get_children():  # (12)
-                self.app.tree.delete(item)  # (16)
+        if not _save_with_retry(self.app.df, FILE_NAME):
+            messagebox.showerror("Ошибка", "Не удалось сохранить файл. Изменения не сохранены.")
+            return
 
-            # 2. Заново заполняем таблицу актуальными данными из измененного DataFrame
-            for idx, row in self.app.df.iterrows():  # (12)
-                self.app.tree.insert("", "end", iid=idx, values=list(row))  # (16)
-        except Exception as e:  # (8)
-            print(f"Предупреждение при отрисовке таблицы: {e}")  # (12)
-
-        # messagebox.showinfo("Успех", "Изменения успешно сохранены в оперативную память!")  # (8)
-        save_data(self.app.df, FILE_NAME)
+        # Обновляем главную таблицу и ширины колонок
+        self.app.recompute_column_widths()
+        self.app.refresh_table()
         self.refresh_cards()  # (8)
 
     def exit_and_refresh(self):  # (4)
@@ -1089,13 +1106,7 @@ class DetailViewWindow:  # (0)
         except Exception:  # (8)
             pass  # (12)
 
-        try:  # (8)
-            for item in self.app.tree.get_children():  # (12)
-                self.app.tree.delete(item)  # (16)
-            for idx, row in self.app.df.iterrows():  # (12)
-                self.app.tree.insert("", "end", iid=idx, values=list(row))  # (16)
-        except Exception:  # (8)
-            pass  # (12)
+        self.app.refresh_table()
 
         self.app.root.update_idletasks()  # (8)
         self.window.destroy()  # (8)

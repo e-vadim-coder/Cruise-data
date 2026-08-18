@@ -5,9 +5,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import pandas as pd
 import zipfile
-import tempfile
 import glob
-from datetime import datetime, timedelta
+from datetime import datetime
 import hashlib
 import time
 
@@ -166,6 +165,18 @@ def validate_type(value: str, expected_type: type) -> bool:
     return True
 
 
+def apply_field_type(value, expected_type):
+    """Приводит строковое значение формы к типу поля (единое правило).
+    int: пустая или нечисловая строка -> 0, иначе int(value).
+    str: возвращается без изменений.
+    """
+    value = str(value).strip()
+    if expected_type is int:
+        s = value[1:] if value.startswith("-") else value
+        return int(value) if s.isdigit() else 0
+    return value
+
+
 def calculate_safe_row_uid(row: dict) -> str:
     """
     Отдельная независимая функция.
@@ -228,22 +239,10 @@ def load_data(file_name: str) -> pd.DataFrame:
 
 
 def save_data(df: pd.DataFrame, file_name: str) -> None:
-    """Сохраняет DataFrame в Excel с защитой от блокировки файла."""
+    """Сохраняет DataFrame в Excel. При ошибке доступа бросает PermissionError."""
     if not isinstance(df, pd.DataFrame) or not isinstance(file_name, str):
         raise TypeError("Неверные типы параметров в процедуре save_data.")
-    # from tkinter import messagebox
-
-    while True:
-        try:
-            df.to_excel(file_name, index=False)
-            break
-        except PermissionError:
-            response = messagebox.askretrycancel(
-                "Ошибка доступа",
-                f"Файл '{file_name}' открыт в Excel.\n\nПожалуйста, закройте его и нажмите 'Повторить'.",
-            )
-            if not response:
-                break
+    df.to_excel(file_name, index=False)
 
 
 def reset_form_fields(inputs_dict: dict) -> None:
@@ -266,23 +265,42 @@ def delete_row_from_df(df: pd.DataFrame, index_to_delete: int) -> pd.DataFrame:
     return df
 
 
-def is_exact_match(new_data: dict, template_row: pd.Series) -> bool:
-    """Проверяет, совпадает ли измененная форма полностью с шаблоном."""
-    if not isinstance(new_data, dict) or not isinstance(
-        template_row, pd.Series
-    ):
-        raise TypeError("Неверные типы параметров.")
-    for field, value in new_data.items():
-        template_val = (
-            str(int(template_row[field]))
-            if FIELDS_CONFIG[field] is int and pd.notna(template_row[field])
-            else str(template_row[field])
-        )
-        if template_val == "nan" or template_val == "0":
-            template_val = ""
-        if value.strip() != template_val.strip():
-            return False
-    return True
+def _to_int(v):
+    """Приводит значение к int для сравнения (пусто/NaN -> 0)."""
+    if pd.isna(v):
+        return 0
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _to_str(v):
+    """Приводит значение к строке для сравнения (пусто/NaN -> '')."""
+    if pd.isna(v):
+        return ""
+    return str(v).strip()
+
+
+def find_full_duplicate(df: pd.DataFrame, row_dict: dict, exclude_index: int = None):
+    """Ищет в df строку, полностью совпадающую с row_dict (без учёта UID).
+    Возвращает индекс найденной строки или None."""
+    compare_cols = [c for c in df.columns if c != "UID"]
+    for idx, row in df.iterrows():
+        if exclude_index is not None and idx == exclude_index:
+            continue
+        same = True
+        for c in compare_cols:
+            if FIELDS_CONFIG.get(c) is int:
+                a, b = _to_int(row[c]), _to_int(row_dict.get(c))
+            else:
+                a, b = _to_str(row[c]), _to_str(row_dict.get(c))
+            if a != b:
+                same = False
+                break
+        if same:
+            return idx
+    return None
 
 
 def _fmt_report_value(v):
