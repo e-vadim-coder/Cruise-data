@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # helpers.py
 import os
+import io
 import tkinter as tk
 from tkinter import ttk, messagebox
 import pandas as pd
@@ -12,7 +13,7 @@ import time
 
 MAX_BACKUPS = 50
 CLEAN_INTERVAL_DAYS = 10
-LAST_CLEAN_FILE = os.path.join("backups", ".last_clean")
+BACKUP_DIR = "backups"
 
 DICTIONARIES = {  # (0)
     "Судно": [
@@ -396,10 +397,119 @@ def get_file_hash(file_path: str) -> str:
         return ""
 
 
-def create_backup(file_paths, backup_dir="backups"):
+def get_file_hash_from_bytes(data: bytes) -> str:
+    """Вычисляет MD5-хэш содержимого байтов (в памяти)."""
+    return hashlib.md5(data).hexdigest()
+
+
+def get_xlsx_inner_hashes(data) -> dict:
     """
-    Создает архив с простым именем 'backup_дата_время.zip' для всех файлов из списка.
-    Если файлы не менялись, дубликат по хэшу не создается.
+    Возвращает {внутренний_член_xlsx: md5} для xlsx-документа.
+    Принимает путь к файлу или байты содержимого (io.BytesIO).
+    Служебные метаданные (docProps/* — дата последнего сохранения, автор и т.п.)
+    исключаются: они меняются при пересохранении, хотя данные остаются прежними.
+    """
+    try:
+        if isinstance(data, bytes):
+            zf = zipfile.ZipFile(io.BytesIO(data), 'r')
+        else:
+            zf = zipfile.ZipFile(data, 'r')
+        with zf:
+            result = {}
+            for info in zf.infolist():
+                if info.filename.startswith("docProps/"):
+                    continue
+                result[info.filename] = get_file_hash_from_bytes(zf.read(info))
+            return result
+    except Exception:
+        return {}
+
+
+def get_zip_content_hashes(zip_path: str) -> dict:
+    """
+    Возвращает {имя_вложенного_файла: кортеж_хэшей_внутренних_членов} для zip-архива бэкапа.
+    Сравнение идёт по содержимому ВЛОЖЕННЫХ xlsx (без служебных docProps/*),
+    а не по байтам самого архива и не по байтам внешних оболочек.
+    """
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            result = {}
+            for info in zf.infolist():
+                data = zf.read(info)
+                inner = get_xlsx_inner_hashes(data)
+                if inner:
+                    result[info.filename] = tuple(sorted(inner.items()))
+            return result
+    except Exception:
+        return {}
+
+
+def get_latest_backup(backup_dir=BACKUP_DIR):
+    """Возвращает путь к самому свежему архиву в каталоге (или None, если архивов нет)."""
+    zips = glob.glob(os.path.join(backup_dir, "*.zip"))
+    if not zips:
+        return None
+    return max(zips, key=os.path.getmtime)
+
+
+def files_match_archive(file_paths, zip_path) -> bool:
+    """
+    Сравнивает текущие файлы с содержимым zip-архива бэкапа.
+    Возвращает True, если для каждого файла из списка в архиве есть вложенный файл
+    с тем же именем и его ДАННЫЕ (внутренние члены xlsx, без служебных docProps/*)
+    совпадают. Сравнение по содержимому, а не по байтам оболочек.
+    Файлов, которых нет на диске, в сравнении не участвуют.
+    """
+    if not zip_path or not os.path.exists(zip_path):
+        return False
+
+    existing_files = [f for f in file_paths if os.path.exists(f)]
+    if not existing_files:
+        return False
+
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            archived_names = set(zf.namelist())
+            for file_path in existing_files:
+                name = os.path.basename(file_path)
+                if name not in archived_names:
+                    return False
+                if get_xlsx_inner_hashes(zf.read(name)) != get_xlsx_inner_hashes(file_path):
+                    return False
+        return True
+    except Exception:
+        return False
+
+
+def count_backups(backup_dir=BACKUP_DIR):
+    """Возвращает количество zip-архивов в каталоге бэкапов."""
+    if not os.path.exists(backup_dir):
+        return 0
+    return len(glob.glob(os.path.join(backup_dir, "*.zip")))
+
+
+def _delete_oldest_backups(backup_dir, count):
+    """Удаляет самые старые архивы. Возвращает количество фактически удалённых."""
+    zips = glob.glob(os.path.join(backup_dir, "*.zip"))
+    zips.sort(key=os.path.getmtime)
+    deleted = 0
+    for old_zip in zips[:count]:
+        try:
+            os.remove(old_zip)
+            deleted += 1
+        except Exception:
+            pass
+    return deleted
+
+
+def create_backup(file_paths, backup_dir=BACKUP_DIR, enforce_limit=True):
+    """
+    Создает архив 'backup_дата_время.zip' с текущим содержимым файлов.
+    Лимит MAX_BACKUPS при создании не отменяет архивацию:
+      - если в папке УЖЕ был лимит MAX_BACKUPS (было ровно MAX) — создаём архив
+        и удаляем 1 самый старый (лимит снова соблюдён, предупреждения нет);
+      - если в папке УЖЕ было БОЛЬШЕ MAX_BACKUPS — создаём архив, удаляем 1 самый
+        старый и выводим предупреждение (переполнение остаётся).
     """
     if not os.path.exists(backup_dir):
         os.makedirs(backup_dir)
@@ -408,35 +518,73 @@ def create_backup(file_paths, backup_dir="backups"):
     if not existing_files:
         return ""
 
-    # Имя архива теперь простое и понятное, без имени таблиц
+    # Считаем количество ДО создания — от него зависит, было ли превышение
+    count_before = count_backups(backup_dir)
+
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     zip_name = os.path.join(backup_dir, f"backup_{timestamp}.zip")
+
+    # Защита от совпадения имени при нескольких вызовах в одну секунду
+    counter = 1
+    while os.path.exists(zip_name):
+        zip_name = os.path.join(backup_dir, f"backup_{timestamp}_{counter}.zip")
+        counter += 1
 
     try:
         with zipfile.ZipFile(zip_name, 'w', zipfile.ZIP_DEFLATED) as zipf:
             for file_path in existing_files:
                 zipf.write(file_path, os.path.basename(file_path))
-        return zip_name
     except Exception as e:
         print(f"Ошибка создания бэкапа: {e}")
         return ""
 
+    if enforce_limit and count_before >= MAX_BACKUPS:
+        _delete_oldest_backups(backup_dir, 1)
+        if count_before > MAX_BACKUPS:
+            _show_limit_warning(count_before + 1)
 
-def clean_duplicate_backups(backup_dir="backups"):
+    return zip_name
+
+
+def _show_limit_warning(n):
+    """Выводит предупреждение о превышении лимита архивов (в консоль и GUI)."""
+    msg = (f"Превышен лимит архивов: в папке backups {n} шт. при максимуме "
+           f"{MAX_BACKUPS} (MAX_BACKUPS). Бэкап создан, но каталог переполнен. "
+           f"Очистите каталог вручную, увеличьте лимит или удалите .last_clean "
+           f"для автоочистки.")
+    print(f"[БЭКАП] {msg}")
+    try:
+        messagebox.showwarning("Превышен лимит архивов", msg)
+    except Exception:
+        pass
+
+
+def clean_duplicate_backups(backup_dir=BACKUP_DIR):
     """
-    Очистка папки бэкапов. Раз в 10 дней наводит порядок, удаляет дубликаты
-    по хэшу и избыток по количеству, выводя отчет в консоль.
+    Плановая очистка папки бэкапов (раз в CLEAN_INTERVAL_DAYS по маркеру .last_clean).
+    Этапы:
+      1) удаление ДУБЛИКАТОВ (копий) — архивов с тем же содержимым данных, что и у
+         уже сохранённого (сравнение по хэшам файлов В АРХИВЕ, а не самого архива).
+         Копии удаляются автоматически, без запроса;
+      2) если после этого архивов БОЛЬШЕ лимита MAX_BACKUPS — запрос пользователю:
+         удалить ли устаревшие архивы сверх лимита (Да/Нет);
+      3) если после всего лимит всё ещё превышен (пользователь отказался) — вывод
+         напоминания о вариантах: смена лимита, ручная очистка, принудительная
+         очистка через удаление маркера .last_clean.
+    В консоль выводится раздельная статистика по копиям и устаревшим.
     """
     if not os.path.exists(backup_dir):
         return
 
     current_date = datetime.now()
-    deleted_count = 0  # Счётчик удалённых файлов
+    deleted_duplicates = 0  # Удалено копий (дубликатов по содержимому)
+    deleted_old = 0         # Удалено устаревших (сверх лимита по количеству)
 
-    # ПРОВЕРКА МЕТКИ ПО ПОНЯТНОЙ ДАТЕ
-    if os.path.exists(LAST_CLEAN_FILE):
+    # ПРОВЕРКА МЕТКИ ПО ПОНЯТНОЙ ДАТЕ (маркер лежит внутри каталога бэкапов)
+    last_clean_file = os.path.join(backup_dir, ".last_clean")
+    if os.path.exists(last_clean_file):
         try:
-            with open(LAST_CLEAN_FILE, 'r') as f:
+            with open(last_clean_file, 'r') as f:
                 last_clean_str = f.read().strip()
             last_clean_date = datetime.strptime(last_clean_str, "%Y-%m-%d")
 
@@ -446,42 +594,63 @@ def clean_duplicate_backups(backup_dir="backups"):
         except Exception:
             pass
 
-    # ПОИСК И УДАЛЕНИЕ ДУБЛИКАТОВ ПО ХЭШУ
+    # ЭТАП 1: УДАЛЕНИЕ КОПИЙ (дубликатов) ПО ХЭШУ СОДЕРЖИМОГО В АРХИВАХ
     zips = glob.glob(os.path.join(backup_dir, "*.zip"))
     zips.sort(key=os.path.getmtime)
 
     seen_hashes = set()
     unique_zips = []
     for old_zip in zips:
-        h = get_file_hash(old_zip)
+        h = tuple(sorted(get_zip_content_hashes(old_zip).items()))
         if h in seen_hashes:
             try:
                 os.remove(old_zip)
-                deleted_count += 1  # Увеличиваем счётчик при удалении хэш-дубликата
+                deleted_duplicates += 1  # Удаляем копию (хэш-дубликат содержимого)
             except Exception:
                 pass
         else:
             seen_hashes.add(h)
             unique_zips.append(old_zip)
 
-    # ОГРАНИЧЕНИЕ ПО КОЛИЧЕСТВУ (оставляем последние MAX_BACKUPS)
-    if len(unique_zips) > MAX_BACKUPS:
-        for old_zip in unique_zips[:-MAX_BACKUPS]:
-            try:
-                os.remove(old_zip)
-                deleted_count += 1  # Увеличиваем счётчик при удалении лишнего по количеству
-            except Exception:
-                pass
+    # ЭТАП 2: ПРИ ПРЕВЫШЕНИИ ЛИМИТА — ЗАПРОС ПЕРЕД УДАЛЕНИЕМ УСТАРЕВШИХ АРХИВОВ
+    excess = len(unique_zips) - MAX_BACKUPS
+    if excess > 0:
+        msg = (f"После удаления копий в папке {os.path.basename(backup_dir)} осталось "
+               f"{len(unique_zips)} архивов при лимите {MAX_BACKUPS} (MAX_BACKUPS) — "
+               f"превышение на {excess} шт.\n\n"
+               f"Удалить {excess} самых старых архивов (устаревших) сейчас?\n"
+               f"«Да» — удалить устаревшие архивы до лимита.\n"
+               f"«Нет» — оставить все как есть (лимит будет превышен).")
+        print(f"[ОЧИСТКА] {msg}")
+        try:
+            if messagebox.askyesno("Превышен лимит архивов", msg):
+                deleted_old = _delete_oldest_backups(backup_dir, excess)
+                print(f"[ОЧИСТКА] Удалено устаревших архивов: {deleted_old} шт.")
+        except Exception:
+            pass
 
-    # ВЫВОД СООБЩЕНИЯ ОБ ОЧИСТКЕ
-    if deleted_count > 0:
-        print(f"[ОЧИСТКА] Обнаружен день плановой проверки. Удалено устаревших бэкапов: {deleted_count} шт.")
+    # ВЫВОД СООБЩЕНИЯ ОБ ОЧИСТКЕ (раздельно: копии и устаревшие)
+    if deleted_duplicates > 0 or deleted_old > 0:
+        parts = []
+        if deleted_duplicates > 0:
+            parts.append(f"удалено копий (дубликатов): {deleted_duplicates} шт.")
+        if deleted_old > 0:
+            parts.append(f"удалено устаревших (сверх лимита): {deleted_old} шт.")
+        print(f"[ОЧИСТКА] Обнаружен день плановой проверки. {', '.join(parts)}")
     else:
         print("[ОЧИСТКА] День плановой проверки: папка бэкапов уже в идеальном состоянии.")
 
+    # ЭТАП 3: ЕСЛИ ПОСЛЕ ВСЕГО ВСЁ ЕЩЁ ПРЕВЫШЕН ЛИМИТ — НАПОМНИТЬ О ВАРИАНТАХ
+    remaining = count_backups(backup_dir)
+    if remaining > MAX_BACKUPS:
+        print(f"[ОЧИСТКА] Внимание: лимит {MAX_BACKUPS} (MAX_BACKUPS) всё ещё превышен "
+               f"({remaining} архивов). Увеличьте MAX_BACKUPS в helpers.py, удалите лишние "
+               f"архивы вручную либо проведите очистку (удалите файл .last_clean "
+               f"в каталоге бэкапов и перезапустите программу).")
+
     # ЗАПИСЬ СВЕЖЕЙ ПОНЯТНОЙ ДАТЫ В МЕТКУ
     try:
-        with open(LAST_CLEAN_FILE, 'w') as f:
+        with open(last_clean_file, 'w') as f:
             f.write(current_date.strftime("%Y-%m-%d"))
     except Exception:
         pass

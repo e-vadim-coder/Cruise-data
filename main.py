@@ -12,6 +12,9 @@ from helpers import (  # (0)
     create_backup,
     clean_duplicate_backups,
     get_file_hash,
+    get_latest_backup,
+    files_match_archive,
+    BACKUP_DIR,
     delete_row_from_df,  # (4)
     export_to_txt,  # (4)
     find_full_duplicate,
@@ -59,15 +62,22 @@ class VoyageAppTabs:  # (0)
 
         # Автоматическая проверка и очистка сирот при старте программы
         # from helpers import check_and_clean_relations
+        sub_before = len(self.sub_df)
         self.sub_df = check_and_clean_relations(self.df, self.sub_df)
-        # Сразу сохраняем чистый результат на диск, если что-то было удалено
-        _save_with_retry(self.sub_df, SUB_FILE_NAME)
+        # Сохраняем чистый результат на диск ТОЛЬКО если реально были удалены сироты.
+        # Иначе не перезаписываем файл: pandas меняет байты файла при каждом сохранении,
+        # из-за чего MD5 отличается при идентичных данных и создаётся лишний бэкап.
+        if len(self.sub_df) != sub_before:
+            _save_with_retry(self.sub_df, SUB_FILE_NAME)
 
         if self.sub_df.empty or "UID_Родителя" not in self.sub_df.columns:
             self.sub_df = pd.DataFrame(columns=list(SUB_TABLE_FIELDS.keys()))
 
         self.selected_index = None  # (8)
         self.inputs = {}  # (8)
+        # Постоянный фильтр (на сессию): словарь «поле: критерий» или None.
+        # Применяется к таблице до явной отмены кнопкой «Сбросить фильтр».
+        self.current_filter = None
 
         self.btn_colors = {  # (8)
             "search"  : "#2980b9",  # (12)
@@ -122,7 +132,7 @@ class VoyageAppTabs:  # (0)
         btn_frame = tk.Frame(self.root, pady=10)  # (8)
         btn_frame.pack(fill="x", padx=10)  # (8)
 
-        tk.Button(  # (8)
+        self.btn_search = tk.Button(  # (8)
             btn_frame,  # (12)
             text="🔍 Поиск",  # (12)
             bg=self.btn_colors["search"],  # (12)
@@ -130,7 +140,17 @@ class VoyageAppTabs:  # (0)
             font=("Arial", 10, "bold"),  # (12)
             padx=10,  # (12)
             command=self.search_data,  # (12)
-        ).pack(side="left", padx=3)  # (8)
+        )  # (8)
+        self.btn_search.pack(side="left", padx=3)  # (8)
+
+        # Индикатор режима фильтра (показывает, активен ли постоянный фильтр)
+        self.filter_status = tk.Label(
+            btn_frame,
+            text="",
+            font=("Arial", 9, "bold"),
+            fg="#c0392b",
+        )
+        self.filter_status.pack(side="left", padx=15)
 
         tk.Button(  # (8)
             btn_frame,  # (12)
@@ -201,6 +221,16 @@ class VoyageAppTabs:  # (0)
             padx=10,  # (12)
             command=self.clear_form,  # (12)
         ).pack(side="left", padx=3)  # (8)
+
+        tk.Button(  # Сброс постоянного фильтра
+            btn_frame,
+            text="🗑 Сбросить фильтр",
+            bg=self.btn_colors["clear"],
+            fg="white",
+            font=("Arial", 10, "bold"),
+            padx=10,
+            command=self.reset_filter,
+        ).pack(side="left", padx=3)
 
         # в самом конце ряда:
         tk.Button(
@@ -424,7 +454,14 @@ class VoyageAppTabs:  # (0)
         for item in self.tree.get_children():  # (8)
             self.tree.delete(item)  # (12)
 
-        display_df = self.df if dataframe is None else dataframe  # (8)
+        # Если передан явный dataframe — показываем его (разовый поиск/выбор).
+        # Иначе показываем данные с учётом активного постоянного фильтра.
+        if dataframe is not None:
+            display_df = dataframe
+        elif self.current_filter:
+            display_df = self._apply_filter(self.df)
+        else:
+            display_df = self.df
 
         # 1. Заполняем таблицу данными
         for idx, row in display_df.iterrows():  # (8)
@@ -435,12 +472,56 @@ class VoyageAppTabs:  # (0)
         for field, final_width in self.col_widths.items():
             self.tree.column(field, width=final_width, anchor="center", stretch=False, minwidth=final_width)  # (12)
 
+        # 3. Обновляем индикатор режима фильтра
+        self._update_filter_indicator(display_df)
+
+    def _update_filter_indicator(self, display_df: pd.DataFrame = None):
+        """Показывает статус фильтра: активен ли он и сколько записей видно."""
+        if not hasattr(self, "filter_status"):
+            return
+        total = len(self.df)
+        shown = len(display_df) if display_df is not None else total
+        if self.current_filter:
+            self.filter_status.config(
+                text=f"Фильтр активен: {shown} из {total} записей",
+                fg="#c0392b",
+            )
+            self.btn_search.config(text="🔍 Фильтр: ON", bg="#c0392b")
+        else:
+            self.filter_status.config(
+                text=f"Все записи: {shown}",
+                fg="#2980b9",
+            )
+            self.btn_search.config(text="🔍 Поиск", bg=self.btn_colors["search"])
+
+    def _apply_filter(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Применяет сохранённые критерии self.current_filter к DataFrame.
+        Возвращает отфильтрованную копию (индексы строк сохраняются)."""
+        if not self.current_filter:
+            return df
+        result = df.copy()
+        for field, value in self.current_filter.items():
+            if FIELDS_CONFIG[field] is int:  # (12)
+                result = result[result[field].astype(str) == value]
+            else:
+                result = result[result[field].astype(str).str.contains(value, case=False, na=False)]
+        return result
+
+    def _collect_filter_criteria(self) -> dict:
+        """Собирает непустые критерии фильтра из полей формы."""
+        criteria = {}
+        for field, value in self.get_form_values().items():
+            if value != "":
+                criteria[field] = value
+        return criteria
+
     def on_row_select(self, event):
         selected_items = self.tree.selection()
         if not selected_items:
             # Если рейс удален и выделение снято — просто стираем всё из нижнего окна
             for item in self.sub_tree.get_children():
                 self.sub_tree.delete(item)
+            self._clear_sub_selection()
             return
 
         tree_id = selected_items[0]
@@ -466,6 +547,10 @@ class VoyageAppTabs:  # (0)
             self.sub_tree.insert("", "end", iid=str(idx), values=values)
         # --------------
 
+        # Сбрасываем выбор/поля каталогов при смене рейса, чтобы «Сохранить изменения»
+        # не редактировал каталог предыдущего рейса (у нового рейса может не быть каталогов)
+        self._clear_sub_selection()
+
         # Старый неизменяемый код заполнения основных вкладок
         reset_form_fields(self.inputs)
         for field, widget in self.inputs.items():
@@ -475,6 +560,14 @@ class VoyageAppTabs:  # (0)
                 widget.set(str(val))
             else:
                 widget.insert(0, str(val))
+
+    def _clear_sub_selection(self):
+        """Снимает выбор каталога и сбрасывает selected_sub_index.
+        Поля ввода каталогов НЕ очищаются: их значения можно использовать
+        как шаблон при «Добавить каталог» для нового рейса."""
+        if hasattr(self, "sub_tree"):
+            self.sub_tree.selection_remove(self.sub_tree.selection())
+        self.selected_sub_index = None
 
     def prepare_template(self):  # (4)
         selected_items = self.tree.selection()  # (8)
@@ -524,6 +617,10 @@ class VoyageAppTabs:  # (0)
 
         # Сценарий 2: Пользователь нажал «Да» — открываем карточку детального просмотра
         if choice is True:  # (8)
+            # Снимаем постоянный фильтр: новая запись может не подходить под критерии
+            # фильтра, и пользователь должен видеть её в таблице при редактировании.
+            self.current_filter = None
+            self.refresh_table()
             DetailViewWindow(self, new_index)  # (12)
 
         # Сценарий 3: Пользователь нажал «Нет» — просто пишем, что всё скопировано
@@ -640,21 +737,19 @@ class VoyageAppTabs:  # (0)
             messagebox.showinfo("Успех", "Запись рейса и все связанные каталоги успешно удалены.")
 
     def search_data(self):  # (4)
-        search_criteria = self.get_form_values()  # (8)
-        filtered_df = self.df.copy()  # (8)
-        for field, value in search_criteria.items():  # (8)
-            if value != "":  # (12)
-                if FIELDS_CONFIG[field] is int:  # (12)
-                    filtered_df = filtered_df[  # (16)
-                        filtered_df[field].astype(str) == value  # (20)
-                    ]  # (16)
-                else:  # (12)
-                    filtered_df = filtered_df[  # (16)
-                        filtered_df[field]  # (20)
-                            .astype(str)  # (24)
-                            .str.contains(value, case=False, na=False)  # (24)
-                    ]  # (16)
-        self.refresh_table(filtered_df)  # (8)
+        # «Поиск» теперь задаёт ПОСТОЯННЫЙ фильтр: таблица остаётся отфильтрованной
+        # до явной отмены кнопкой «Сбросить фильтр». Фильтр пересчитывается после
+        # добавления/редактирования/удаления (см. refresh_table).
+        self.current_filter = self._collect_filter_criteria()
+        self.refresh_table()  # (8)
+
+    def reset_filter(self):
+        """Отменяет постоянный фильтр: показывает все записи."""
+        self.current_filter = None
+        reset_form_fields(self.inputs)
+        self.selected_index = None
+        self.refresh_table()
+        messagebox.showinfo("Фильтр снят", "Постоянный фильтр отменён. Показаны все записи.")
 
     def open_detail_view(self):  # (4)
         """Проверяет выделение строки и открывает карточный режим."""  # (8)
@@ -1113,13 +1208,21 @@ class DetailViewWindow:  # (0)
 
 
 if __name__ == "__main__":
-    # 1. Делаем обязательный бэкап при старте (как у вас и было)
-    res = create_backup([FILE_NAME, SUB_FILE_NAME])
-    if res:
-        print(f"Успешно создан бэкап: {res}")
-
     root = tk.Tk()
     app = VoyageAppTabs(root)
+
+    # 1. Бэкап при старте — ПОСЛЕ стартовой обработки данных.
+    #    Архив создается только если содержимое файлов отличается от последнего архива
+    #    (сравнение по MD5 файлов В АРХИВЕ, а не самого архива).
+    #    Точка после VoyageAppTabs важна: если стартовая обработка ничего не меняла,
+    #    файлы совпадают с последним архивом и лишний бэкап не создаётся.
+    latest = get_latest_backup(BACKUP_DIR)
+    if latest is not None and files_match_archive([FILE_NAME, SUB_FILE_NAME], latest):
+        print("Изменений с момента последнего бэкапа нет. Стартовый бэкап пропущен.")
+    else:
+        res = create_backup([FILE_NAME, SUB_FILE_NAME], BACKUP_DIR)
+        if res:
+            print(f"Успешно создан бэкап: {res}")
 
     # 2. Снимок состояния ОБОИХ файлов после стартовой обработки
     start_hashes = {
@@ -1138,16 +1241,18 @@ if __name__ == "__main__":
             for name in (FILE_NAME, SUB_FILE_NAME)
         )
 
-        # Если хэши разные — значит, пользователь вносил изменения или сохранял данные
+        # Финальный бэкап создается при ЛЮБОМ изменении данных однозначно.
+        # Лимит проверяется внутри create_backup: при достижении удаляется 1 самый
+        # старый архив, при превышении — 1 старый + предупреждение.
         if changed:
             print("Обнаружены изменения в базе данных. Создается финальный бэкап...")
-            res2 = create_backup([FILE_NAME, SUB_FILE_NAME])
+            res2 = create_backup([FILE_NAME, SUB_FILE_NAME], BACKUP_DIR)
             if res2:
                 print(f"Успешно создан бэкап: {res2}")
         else:
             print("Изменений не было. Финальный бэкап пропущен.")
 
-        clean_duplicate_backups()  # Функция сама проверит маркер и решит, запускаться или нет
+        clean_duplicate_backups(BACKUP_DIR)  # Функция сама проверит маркер и решит, запускаться или нет
 
         # 4. Жестко и последовательно останавливаем интерфейс Tkinter
         root.quit()
