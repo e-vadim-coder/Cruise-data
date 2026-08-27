@@ -1,5 +1,20 @@
 # -*- coding: utf-8 -*-
 # main.py
+import os
+import sys
+from datetime import datetime
+# При запуске .exe переходим в папку самого исполняемого файла,
+# чтобы программа находила файлы данных (voyage_data.xlsx и др.)
+# независимо от того, из какого каталога её запустили.
+if getattr(sys, 'frozen', False):
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    os.chdir(exe_dir)
+    # Перенаправляем print в лог-файл рядом с .exe
+    log_path = os.path.join(exe_dir, "voyage.log")
+    sys.stdout = open(log_path, "a", encoding="utf-8")
+    print(f"\n{'='*50}")
+    print(f"VoyageManager запуск: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
+    print(f"{'='*50}")
 import tkinter as tk  # (0)
 import pandas as pd  # (0)
 from tkinter import filedialog, font, messagebox, ttk  # (0)
@@ -17,6 +32,7 @@ from helpers import (  # (0)
     BACKUP_DIR,
     delete_row_from_df,  # (4)
     export_to_txt,  # (4)
+    export_to_xlsx_with_catalogs,
     find_full_duplicate,
     load_data,  # (4)
     reset_form_fields,  # (4)
@@ -782,20 +798,43 @@ class VoyageAppTabs:  # (0)
             messagebox.showwarning("Экспорт", "Нет данных для экспорта.")  # (12)
             return  # (12)
 
-        # Открываем стандартное диалоговое окно Windows для сохранения файла
-        file_path = filedialog.asksaveasfilename(  # (8)
-            defaultextension=".txt",  # (12)
-            filetypes=[("Текстовый файл", "*.txt"), ("Все файлы", "*.*")],  # (12)
-            title="Сохранить отчет как..."  # (12)
-        )  # (8)
+        # Спрашиваем формат: TXT или XLSX
+        choice = messagebox.askyesnocancel(
+            "Формат отчета",
+            "Выберите формат отчета:\n\n"
+            "«Да» — XLSX (с полями каталогов, развёрнуто по строкам)\n"
+            "«Нет» — TXT (простой текст, как сейчас)\n"
+            "«Отмена» — выйти",
+        )
+        if choice is None:
+            return
 
-        if file_path:  # (8)
-            # Вызываем процедуру экспорта из helpers.py
-            export_to_txt(export_df, file_path)  # (12)
+        # Определяем расширение и фильтр по умолчанию
+        if choice:  # True = XLSX
+            def_ext = ".xlsx"
+            filetypes = [("Excel файл", "*.xlsx"), ("Все файлы", "*.*")]
+        else:  # False = TXT
+            def_ext = ".txt"
+            filetypes = [("Текстовый файл", "*.txt"), ("Все файлы", "*.*")]
 
-            status = "отфильтрованных" if is_filtered else "всех"  # (12)
-            messagebox.showinfo("Успех",
-                                f"Отчет по форме ({status} записей: {len(export_df)}) успешно сохранен!")  # (12)
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=def_ext,
+            filetypes=filetypes,
+            title="Сохранить отчет как..."
+        )
+
+        if not file_path:
+            return
+
+        if choice:  # XLSX
+            export_to_xlsx_with_catalogs(export_df, self.sub_df, file_path)
+        else:  # TXT
+            export_to_txt(export_df, file_path)
+
+        fmt = "XLSX" if choice else "TXT"
+        status = "отфильтрованных" if is_filtered else "всех"
+        messagebox.showinfo("Успех",
+                            f"Отчет ({fmt}, {status} записей: {len(export_df)}) успешно сохранён!")
 
     def add_sub_data(self):
         if self.selected_index is None:
@@ -1257,6 +1296,15 @@ if __name__ == "__main__":
         # 4. Жестко и последовательно останавливаем интерфейс Tkinter
         root.quit()
         root.destroy()
+
+        # Записываем завершение в лог (только для .exe)
+        if getattr(sys, 'frozen', False):
+            print(f"VoyageManager завершение: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
+            try:
+                sys.stdout.flush()
+                sys.stdout.close()
+            except Exception:
+                pass
 
     # Привязываем закрытие окна на крестик к нашей чистой функции
     root.protocol("WM_DELETE_WINDOW", on_closing)

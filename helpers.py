@@ -22,7 +22,9 @@ DICTIONARIES = {  # (0)
         "Академик Мстислав Келдыш",
         "Академик Иоффе",
         "Академик Сергей Вавилов",
-        "Профессор Штокман"
+        "Профессор Штокман",
+        "РЖД 09-61 БРИГ",
+        "Норд-3"
     ],  # (4)
     "Начальник рейса": [
         "Сивков В.В.",
@@ -36,7 +38,8 @@ DICTIONARIES = {  # (0)
         "Дорохова Е.В.",
         "Фрей Д.И.",
         "Баширова Л.Д.",
-        "Ульянова М.О."
+        "Ульянова М.О.",
+        "Пака В.Т."
     ],  # (4)
     "Начальник отряда геофизики": [  # (4)
         "Дорохов Д.В.",  # (8)
@@ -44,12 +47,14 @@ DICTIONARIES = {  # (0)
         "Данченков А.Р.", # (8)
         "Дорохова Е.В.",
         "Дудков И.Ю.",
+        "Крек А.В."
         "Кречик В.А.",
         "Пономаренко Е.П.",
         "Сергеев А.Ю.",
         "Луговой Н.Н.",
         "Матуль А.Г.",
-        "Сухих Е.А."
+        "Сухих Е.А.",
+        "Крюков Д.А."
     ],  # (4)
     "Начальник отряда сейсмических исследований": [  # (4)
         "Ежов В.Е.",  # (8)
@@ -66,11 +71,12 @@ DICTIONARIES = {  # (0)
         "Reson SeaBat 7150",
         "EdgeTech 3300-HM",
         "Parasound P70",
+        "Parasound P35",
         "Benthos C3D",
         "SES2000",
         "SyQuest Bathy-2010 "
-    ],  # (4)
-    "Степень обработки": ["Необработанные", "Обработанные", "Сырые и обработанные"],  # (4)
+    ],
+    "Степень обработки": ["Необработанные", "Обработанные", "Сырые и обработанные"],
     "Формат файла": [
         "ASD, SEG-Y",
         "JSF, SEG-Y",
@@ -78,14 +84,15 @@ DICTIONARIES = {  # (0)
         "GIS project",
         "Hypack project",
         "Qinsy project",
+        "Kingdom project",
         "ASCII",
         "DTM",
         "GeoTiff",
         "SEG-Y",
         "RAW",
         "SES2000"
-    ],  # (4)
-}  # (0)
+    ],
+}
 
 TABS_CONFIG = {  # (0)
     "Общая информация": [  # (4)
@@ -335,8 +342,51 @@ def export_to_txt(df: pd.DataFrame, target_file_path: str) -> None:
                     f.write(f"{col}: {val}\n")
                 f.write("\n" + "." * 40 + "\n\n")
     except Exception as e:
-        # from tkinter import messagebox
         messagebox.showerror("Ошибка", f"Не удалось записать отчет:\n{str(e)}")
+
+
+def export_to_xlsx_with_catalogs(main_df: pd.DataFrame, sub_df: pd.DataFrame,
+                                  file_path: str,
+                                  catalog_fields: list = None) -> None:
+    """
+    Генерирует XLSX-отчет: основная таблица рейсов с добавлением полей из
+    подчинённой таблицы каталогов. Если у рейса несколько записей каталога —
+    каждая выводится отдельной строкой (JOIN по UID).
+    """
+    if catalog_fields is None:
+        catalog_fields = ["каталоги", "наличие метаданных",
+                          "метаданные добавлены в БМД ЛГА",
+                          "Наличие 2-ой копии данных",
+                          "№ диска с копией", "каталоги с копией"]
+
+    rows = []
+    for _, main_row in main_df.iterrows():
+        uid = str(main_row.get("UID", "")).strip()
+        matched = sub_df[sub_df["UID_Родителя"].astype(str).str.strip() == uid] if uid else pd.DataFrame()
+        if matched.empty:
+            # рейс без каталогов — одна строка с пустыми полями каталогов
+            row = {col: _fmt_report_value(main_row.get(col, "")) for col in main_df.columns}
+            for cf in catalog_fields:
+                row[cf] = ""
+            rows.append(row)
+        else:
+            for _, sub_row in matched.iterrows():
+                row = {col: _fmt_report_value(main_row.get(col, "")) for col in main_df.columns}
+                for cf in catalog_fields:
+                    row[cf] = _fmt_report_value(sub_row.get(cf, ""))
+                rows.append(row)
+
+    result_df = pd.DataFrame(rows)
+
+    # порядок колонок: сначала основные (без UID), потом каталоги
+    main_cols = [c for c in main_df.columns if c != "UID"]
+    out_cols = main_cols + catalog_fields
+    result_df = result_df[out_cols]
+
+    try:
+        result_df.to_excel(file_path, index=False, engine="openpyxl")
+    except Exception as e:
+        messagebox.showerror("Ошибка", f"Не удалось сохранить XLSX-отчет:\n{str(e)}")
 
 def get_card_context(df, current_index: int) -> dict:  # (0)
     """Определяет данные для 3-х карточек режима «Детальный просмотр»."""  # (4)
