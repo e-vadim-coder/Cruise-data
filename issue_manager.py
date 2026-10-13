@@ -42,25 +42,23 @@ ISSUE_FILE = "issue_register.xlsx"
 BACKUP_DIR = "issue_backups"
 MAX_BACKUPS = 50
 
-# Поля рейса, которые копируются в запись выдачи (для контекста)
-COPIED_FIELDS = [
-    "№ п/п", "Год", "Рейс", "Судно", "№ рейса",
-    "Район исследования", "Тип данных", "Прибор",
-    "Степень обработки", "Формат файла", "Объем данных",
-]
+# Поля рейса, копируемые в запись выдачи: ВСЕ поля voyage_data кроме UID.
+# Динамически берём из FIELDS_CONFIG (helpers), чтобы автоматически подхватывать состав.
+COPIED_FIELDS = [f for f in FIELDS_CONFIG.keys() if f != "UID"]
 
-# Поля, добавляемые к выдаче
+# Поля, добавляемые к выдаче (собственно учёт выдачи)
 ISSUE_FIELDS = {
-    "UID": str,                 # ключ выдачи (для связей/стабильности)
-    "UID_рейса": str,           # ссылка на рейс
+    "UID": str,                    # ключ выдачи (для связей/стабильности)
+    "UID_рейса": str,              # ссылка на рейс
+    "выданные каталоги": str,      # все значения «каталоги» связанных записей sub (заполняется авто)
     "Дата выдачи": str,
     "ФИО сотрудника": str,
     "Подразделение": str,
     "Цель выдачи": str,
-    "Выданный каталог": str,
-    "Дата возврата": str,
-    "Возвращено": str,          # Да / Нет
-    "Носитель": str,
+    "срок моратория/реализации": str,
+    "Научная задача": str,
+    "Отметка о реализации": str,   # «Данные обработаны» или выходные данные статьи
+    "Дата выполнения": str,        # заменяет «Дата возврата»
     "Комментарий": str,
 }
 
@@ -73,9 +71,10 @@ TABLE_HEADINGS_SHORT = {
     "Тип данных": "Тип", "Прибор": "Прибор", "Формат файла": "Формат",
     "Объем данных": "Объем", "Дата выдачи": "Дата выдачи",
     "ФИО сотрудника": "Сотрудник", "Подразделение": "Подразделение",
-    "Цель выдачи": "Цель", "Выданный каталог": "Каталог",
-    "Дата возврата": "Дата возвр.", "Возвращено": "Возвр.?",
-    "Носитель": "Носитель", "Комментарий": "Комментарий",
+    "Цель выдачи": "Цель", "выданные каталоги": "Выданные каталоги",
+    "срок моратория/реализации": "Срок моратория/реализации",
+    "Научная задача": "Научная задача", "Отметка о реализации": "Отметка о реализации",
+    "Дата выполнения": "Дата выполнения", "Комментарий": "Комментарий",
 }
 
 # Возможные цели выдачи (выпадающий список)
@@ -84,15 +83,18 @@ ACTIVITY_OPTIONS = [
     "Для написания статьи",
     "Для доклада / презентации",
     "Для отчёта",
-    "Для контрольной работы",
     "Другое",
 ]
+
+# Возможные значения «Отметки о реализации»
+REALIZATION_OPTIONS = ["Данные обработаны"]
 
 # Поля, отображаемые в таблице выдачи (визуальный порядок)
 DISPLAY_COLUMNS = [
     "№ п/п", "Год", "Рейс", "Судно", "Тип данных", "Прибор",
     "Дата выдачи", "ФИО сотрудника", "Подразделение", "Цель выдачи",
-    "Дата возврата", "Возвращено", "Носитель", "Комментарий",
+    "выданные каталоги", "срок моратория/реализации", "Научная задача",
+    "Отметка о реализации", "Дата выполнения", "Комментарий",
 ]
 
 
@@ -161,6 +163,7 @@ class IssueManagerWindow:
         self.window = tk.Toplevel(self.root)
         self.window.title("Учет выдачи акустических данных научным сотрудникам")
         self.window.geometry("1500x950")
+        self.window.state("zoomed")  # развернуть окно на весь экран
         self.window.transient(self.root)
         self.window.grab_set()
 
@@ -183,16 +186,17 @@ class IssueManagerWindow:
     # Построение интерфейса
     # ---------------------------------------------------------------
     def create_widgets(self):
-        top = tk.LabelFrame(self.window, text=" Рейс ", font=("Arial", 10, "bold"), padx=8, pady=6)
+        # Секция «Выбранная запись»: только отображение рейсовых данных (без выбора)
+        top = tk.LabelFrame(self.window, text=" Выбранная запись ", font=("Arial", 10, "bold"), padx=8, pady=6)
         top.pack(fill="x", padx=10, pady=5)
 
-        self.btn_pick = tk.Button(top, text="🔍 Выбрать рейс...", bg="#2980b9", fg="white",
-                                  font=("Arial", 10, "bold"), padx=10, command=self.pick_voyage)
-        self.btn_pick.pack(side="left", padx=5, pady=4)
+        # Строка 1: метка рейса + даты начала/окончания рейса
         self.lbl_selected_voyage = tk.Label(top, text="Рейс не выбран", font=("Arial", 10, "bold"),
-                                            fg="#555555", anchor="w")
-        self.lbl_selected_voyage.pack(side="left", padx=10, pady=4, fill="x", expand=True)
-        self.lbl_context = tk.Label(top, text="", font=("Arial", 9), anchor="w", justify="left")
+                                            fg="#000000", bg="#add8e6", anchor="w", padx=5, pady=2)
+        self.lbl_selected_voyage.pack(fill="x", padx=5, pady=2)
+        # Строка 2 (объединение контекста и объёма данных)
+        self.lbl_context = tk.Label(top, text="", font=("Arial", 9), anchor="w", justify="left",
+                                    bg="#add8e6", fg="#000000", padx=5, pady=1)
         self.lbl_context.pack(fill="x", padx=5, pady=2)
 
         # --- Форма выдачи ---
@@ -200,12 +204,16 @@ class IssueManagerWindow:
         form.pack(fill="x", padx=10, pady=5)
 
         self.inputs = {}
+        # «выданные каталоги» — редактируемое поле: авто-заполняется значениями
+        # из voyage_sub_data при выборе рейса, но его можно изменить вручную.
         rows = [
             ("Дата выдачи", "entry", None), ("ФИО сотрудника", "entry", None),
             ("Подразделение", "entry", None), ("Цель выдачи", "combo", ACTIVITY_OPTIONS),
-            ("Выданный каталог", "combo", ["— нет каталогов —"]),
-            ("Дата возврата", "entry", None),
-            ("Возвращено", "combo_yn", ["Да", "Нет"]), ("Носитель", "entry", None),
+            ("выданные каталоги", "entry", None),
+            ("срок моратория/реализации", "entry", None),
+            ("Научная задача", "entry", None),
+            ("Отметка о реализации", "combo", REALIZATION_OPTIONS),
+            ("Дата выполнения", "entry", None),
             ("Комментарий", "entry", None),
         ]
         for i, (field, kind, values) in enumerate(rows):
@@ -213,7 +221,8 @@ class IssueManagerWindow:
             tk.Label(form, text=field + ":", font=("Arial", 10)) \
                 .grid(row=r, column=c * 2, sticky="w", padx=(6, 2), pady=3)
             if kind == "combo":
-                w = ttk.Combobox(form, values=values or ACTIVITY_OPTIONS, width=42)
+                w = ttk.Combobox(form, values=values or [], width=42)
+                w.set("")
             elif kind == "combo_yn":
                 w = ttk.Combobox(form, values=["Да", "Нет"], width=42)
             else:
@@ -223,6 +232,8 @@ class IssueManagerWindow:
 
         btns = tk.Frame(form)
         btns.grid(row=5, column=0, columnspan=4, pady=8)
+        tk.Button(btns, text="➕ Добавить запись", bg="#2980b9", fg="white",
+                  font=("Arial", 10, "bold"), padx=10, command=self.pick_voyage).pack(side="left", padx=4)
         tk.Button(btns, text="📄 Оформить выдачу", bg="#27ae60", fg="white",
                   font=("Arial", 10, "bold"), padx=10, command=self.add_issue).pack(side="left", padx=4)
         tk.Button(btns, text="💾 Сохранить изменения", bg="#d35400", fg="white",
@@ -273,31 +284,42 @@ class IssueManagerWindow:
     def prepopulate_from_row(self, row):
         """Инициализирует контекст из заранее выбранного рейса (передан из main.py)."""
         self.set_context_from_dict(row)
+        self._set_selected_label(row)
+
+    def _set_selected_label(self, row):
+        """Заполняет 1-ю строку секции: рейс + даты начала/окончания."""
+        dates = []
+        for k, label in (("Дата начала рейса", "Начало рейса"),
+                         ("Дата окончания рейса", "Конец рейса")):
+            v = fmt(row.get(k, ""))
+            if v:
+                dates.append(f"{label}: {v}")
+        date_txt = " | ".join(dates) if dates else ""
         self.lbl_selected_voyage.config(
             text=f"{fmt(row.get('№ п/п'))} | {fmt(row.get('Рейс'))} | "
-                 f"{fmt(row.get('Судно'))} | {fmt(row.get('Год'))}",
+                 f"{fmt(row.get('Судно'))} | {fmt(row.get('Год'))}"
+                 + (f"   —   {date_txt}" if date_txt else ""),
             fg="#000000")
 
     def set_context_from_dict(self, row):
-        """Заполняет ctx_store и каталоги по dict строки рейса."""
+        """Заполняет ctx_store и поле «выданные каталоги» по выбранному рейсу."""
         self.ctx_store = {k: row.get(k, "") for k in COPIED_FIELDS}
         self.ctx_store["UID_рейса"] = fmt(row.get("UID", ""))
-        uid = self.ctx_store["UID_рейса"]
-        catalogs = ["— нет каталогов —"]
-        if uid:
-            subs = self.sub_df[self.sub_df["UID_Родителя"].astype(str).str.strip() == uid]
-            cats = [fmt(x) for x in subs["каталоги"] if fmt(x)]
-            cats += [fmt(x) for x in subs["каталоги с копией"] if fmt(x)]
-            if cats:
-                catalogs = list(dict.fromkeys(cats))
-        cat_combo = self.inputs["Выданный каталог"]
-        cat_combo["values"] = catalogs
-        cat_combo.set(catalogs[0] if catalogs else "— нет каталогов —")
-        parts = [f"{k}: {fmt(self.ctx_store.get(k, ''))}" for k in
+        # Авто-заполняем «выданные каталоги» значениями связанных записей sub
+        catalogs = self._collect_catalogs(self.ctx_store["UID_рейса"])
+        cat_input = self.inputs.get("выданные каталоги")
+        if cat_input is not None:
+            cat_input.delete(0, tk.END)
+            cat_input.insert(0, catalogs)
+        self.lbl_context.config(text=self._fmt_record_details(self.ctx_store))
+
+    def _fmt_record_details(self, data):
+        """Формирует строку 2 секции «Выбранная запись»: контекст + объём данных."""
+        parts = [f"{k}: {fmt(data.get(k, ''))}" for k in
                  ["Тип данных", "Прибор", "Район исследования", "Формат файла",
                   "Степень обработки", "Объем данных"]
-                 if fmt(self.ctx_store.get(k, ""))]
-        self.lbl_context.config(text="   |   ".join(parts) if parts else "Сведения о рейсе не заполнены.")
+                 if fmt(data.get(k, ""))]
+        return "   |   ".join(parts) if parts else "Сведения о рейсе не заполнены."
 
     # ---------------------------------------------------------------
     # Выбор рейса
@@ -366,10 +388,7 @@ class IssueManagerWindow:
         row = self.voyage_df.iloc[idx].to_dict()
         self.selected_voyage_idx = idx
         self.set_context_from_dict(row)
-        self.lbl_selected_voyage.config(
-            text=f"{fmt(row.get('№ п/п'))} | {fmt(row.get('Рейс'))} | "
-                 f"{fmt(row.get('Судно'))} | {fmt(row.get('Год'))}",
-            fg="#000000")
+        self._set_selected_label(row)
         # После смены рейса очищаем форму выдачи и снимаем выбор: иначе «Сохранить»
         # перезапишет чужую запись контекстом нового рейса.
         self.clear_form()
@@ -399,13 +418,24 @@ class IssueManagerWindow:
         vals = self.get_form_values()
         row = {k: self.ctx_store.get(k, "") for k in COPIED_FIELDS}
         row["UID_рейса"] = self.ctx_store.get("UID_рейса", "")
+        # «выданные каталоги» берём из формы (авто-заполнены, но пользователь может изменить)
+        row["выданные каталоги"] = vals.get("выданные каталоги", "")
         for k in ISSUE_FIELDS:
-            if k in ("UID", "UID_рейса"):
+            if k in ("UID", "UID_рейса", "выданные каталоги"):
                 continue
             row[k] = vals.get(k, "")
         if not row["Дата выдачи"]:
             raise RuntimeError("Укажите дату выдачи.")
         return row
+
+    def _collect_catalogs(self, uid):
+        """Собирает все значения поля «каталоги» записей voyage_sub_data, связанных с рейсом."""
+        if not uid:
+            return ""
+        subs = self.sub_df[self.sub_df["UID_Родителя"].astype(str).str.strip() == str(uid).strip()]
+        cats = [fmt(x) for x in subs["каталоги"] if fmt(x)]
+        # подставляем только связанные с выбранной записью; без каталогов с копией
+        return "\n".join(dict.fromkeys(cats))
 
     def save(self):
         while True:
@@ -523,10 +553,8 @@ class IssueManagerWindow:
         row = self.issue_df.loc[self.selected_issue_index].to_dict()
         self.ctx_store = {k: row.get(k, "") for k in COPIED_FIELDS}
         self.ctx_store["UID_рейса"] = fmt(row.get("UID_рейса", ""))
-        self.lbl_context.config(
-            text="   |   ".join(f"{k}: {fmt(row.get(k, ''))}" for k in
-                                ["Тип данных", "Прибор", "Район исследования", "Формат файла"]
-                                if fmt(row.get(k, ""))) or "Сведения о рейсе не заполнены.")
+        self.lbl_context.config(text=self._fmt_record_details(self.ctx_store))
+        self._set_selected_label(self.ctx_store)
         for f, w in self.inputs.items():
             if isinstance(w, ttk.Combobox):
                 w.set(fmt(row.get(f, "")))
@@ -550,7 +578,7 @@ class IssueManagerWindow:
         # контекст, из-за которого «Оформить выдачу» создаст запись старого рейса.
         self.clear_form()
         self.ctx_store = {}
-        self.lbl_selected_voyage.config(text="Рейс не выбран", fg="#555555")
+        self.lbl_selected_voyage.config(text="Рейс не выбран")
         self.lbl_context.config(text="")
         self.refresh_issue_table()
 
