@@ -1,14 +1,19 @@
 # -*- coding: utf-8 -*-
 # helpers.py
 import os
+import io
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import pandas as pd
 import zipfile
-import tempfile
 import glob
-from datetime import datetime, timedelta
+from datetime import datetime
 import hashlib
+import time
+
+MAX_BACKUPS = 50
+CLEAN_INTERVAL_DAYS = 10
+BACKUP_DIR = "backups"
 
 DICTIONARIES = {  # (0)
     "Судно": [
@@ -17,7 +22,9 @@ DICTIONARIES = {  # (0)
         "Академик Мстислав Келдыш",
         "Академик Иоффе",
         "Академик Сергей Вавилов",
-        "Профессор Штокман"
+        "Профессор Штокман",
+        "РЖД 09-61 БРИГ",
+        "Норд-3"
     ],  # (4)
     "Начальник рейса": [
         "Сивков В.В.",
@@ -31,7 +38,8 @@ DICTIONARIES = {  # (0)
         "Дорохова Е.В.",
         "Фрей Д.И.",
         "Баширова Л.Д.",
-        "Ульянова М.О."
+        "Ульянова М.О.",
+        "Пака В.Т."
     ],  # (4)
     "Начальник отряда геофизики": [  # (4)
         "Дорохов Д.В.",  # (8)
@@ -39,12 +47,14 @@ DICTIONARIES = {  # (0)
         "Данченков А.Р.", # (8)
         "Дорохова Е.В.",
         "Дудков И.Ю.",
+        "Крек А.В.",
         "Кречик В.А.",
         "Пономаренко Е.П.",
         "Сергеев А.Ю.",
         "Луговой Н.Н.",
         "Матуль А.Г.",
-        "Сухих Е.А."
+        "Сухих Е.А.",
+        "Крюков Д.А."
     ],  # (4)
     "Начальник отряда сейсмических исследований": [  # (4)
         "Ежов В.Е.",  # (8)
@@ -61,11 +71,12 @@ DICTIONARIES = {  # (0)
         "Reson SeaBat 7150",
         "EdgeTech 3300-HM",
         "Parasound P70",
+        "Parasound P35",
         "Benthos C3D",
         "SES2000",
         "SyQuest Bathy-2010 "
-    ],  # (4)
-    "Степень обработки": ["Необработанные", "Обработанные", "Сырые и обработанные"],  # (4)
+    ],
+    "Степень обработки": ["Необработанные", "Обработанные", "Сырые и обработанные"],
     "Формат файла": [
         "ASD, SEG-Y",
         "JSF, SEG-Y",
@@ -73,14 +84,15 @@ DICTIONARIES = {  # (0)
         "GIS project",
         "Hypack project",
         "Qinsy project",
+        "Kingdom project",
         "ASCII",
         "DTM",
         "GeoTiff",
         "SEG-Y",
         "RAW",
         "SES2000"
-    ],  # (4)
-}  # (0)
+    ],
+}
 
 TABS_CONFIG = {  # (0)
     "Общая информация": [  # (4)
@@ -132,6 +144,7 @@ FIELDS_CONFIG = {
     "Степень обработки": str,
     "Формат файла": str,
     "Объем данных": str,
+    "UID": str
 }
 
 # Словарь сокращений только для шапки Treeview
@@ -149,66 +162,6 @@ TABLE_HEADINGS_SHORT = {
     # Для остальных полей, которых нет в словаре, программа автоматически оставит полное название
 }
 
-def create_backup(file_path: str, backup_dir: str = "backups", max_backups: int = 50) -> bool:
-    """
-    Создает сжатую zip-копию файла данных, сохраняет в указанную директорию
-    и удаляет старые копии, оставляя только N последних.
-    """
-    # Особое условие проекта: Обязательная проверка типов передаваемых параметров
-    if not isinstance(file_path, str):
-        raise TypeError("Параметр file_path должен быть строкой.")
-    if not isinstance(backup_dir, str):
-        raise TypeError("Параметр backup_dir должен быть строкой.")
-    if not isinstance(max_backups, int):
-        raise TypeError("Параметр max_backups должен быть целым числом.")
-
-    # Если исходный файл данных еще не создан (например, самый первый запуск), выходим
-    if not os.path.exists(file_path):
-        print(f"Исходный файл {file_path} не найден. Резервная копия не создана.")
-        return False
-
-    try:
-        # Создаем папку для бэкапов, если её нет
-        if not os.path.exists(backup_dir):
-            os.makedirs(backup_dir)
-
-        # Формируем имя архива: voyage_data_20261025_143005.zip
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_name = os.path.splitext(os.path.basename(file_path))[0]
-        zip_filename = f"{base_name}_{timestamp}.zip"
-        zip_filepath = os.path.join(backup_dir, zip_filename)
-
-        # Сжимаем файл в ZIP-архив
-        with zipfile.ZipFile(zip_filepath, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            # os.path.basename(file_path) нужен, чтобы внутри zip файл лежал без путей
-            zipf.write(file_path, arcname=os.path.basename(file_path))
-
-        print(f"Резервная копия успешно создана: {zip_filepath}")
-
-        # Очистка старых копий: ищем все .zip файлы шаблона 'имя_*.zip' в папке бэкапов
-        search_pattern = os.path.join(backup_dir, f"{base_name}_*.zip")
-        backup_files = glob.glob(search_pattern)
-
-        # Сортируем файлы по времени изменения (mtime) от самых старых к самым новым
-        backup_files.sort(key=os.path.getmtime)
-
-        # Если копий больше, чем разрешено, удаляем самые старые
-        if len(backup_files) > max_backups:
-            files_to_delete = backup_files[:-max_backups]  # Все, кроме последних N
-            for old_file in files_to_delete:
-                try:
-                    os.remove(old_file)
-                    print(f"Старая резервная копия удалена: {old_file}")
-                except Exception as e:
-                    print(f"Не удалось удалить старый файл {old_file}: {e}")
-
-        return True
-
-    except Exception as e:
-        print(f"Ошибка при создании резервной копии: {e}")
-        return False
-
-
 def validate_type(value: str, expected_type: type) -> bool:
     """Проверяет соответствие строкового значения ожидаемому типу данных."""
     if not isinstance(expected_type, type) or not isinstance(value, str):
@@ -220,6 +173,36 @@ def validate_type(value: str, expected_type: type) -> bool:
     return True
 
 
+def apply_field_type(value, expected_type):
+    """Приводит строковое значение формы к типу поля (единое правило).
+    int: пустая или нечисловая строка -> 0, иначе int(value).
+    str: возвращается без изменений.
+    """
+    value = str(value).strip()
+    if expected_type is int:
+        s = value[1:] if value.startswith("-") else value
+        return int(value) if s.isdigit() else 0
+    return value
+
+
+def calculate_safe_row_uid(row: dict) -> str:
+    """
+    Отдельная независимая функция.
+    Безопасно вычисляет UID: если научные поля пустые, возвращает маркер 'empty_'.
+    Если поля заполнены — вызывает вашу родную генерацию хэш-суммы.
+    """
+    pp = str(row.get("№ п/п", "")).strip()
+    vessel = str(row.get("Судно", "")).strip()
+    voyage = str(row.get("№ рейса", "")).strip()
+    year = str(row.get("Год", "")).strip()
+
+    # Если ключевые поля пустые, не считаем кривой хэш-сироту
+    if not vessel or not voyage or not year or vessel == "nan" or year == "nan":
+        return f"empty_{pp}"
+
+    # Если поля заполнены — вызываем оригинальный метод хэш-суммы
+    return generate_row_uid(row)
+
 def load_data(file_name: str) -> pd.DataFrame:
     """Загружает данные из Excel файла."""
     if not isinstance(file_name, str):
@@ -227,12 +210,36 @@ def load_data(file_name: str) -> pd.DataFrame:
     if os.path.exists(file_name):
         try:
             df = pd.read_excel(file_name)
-            for col, t in FIELDS_CONFIG.items():
+            # --- УНИВЕРСАЛЬНОЕ ПРИВЕДЕНИЕ ТИПОВ ДЛЯ ОБОИХ ФАЙЛОВ EXCEL ---
+            # Автоматически выбираем нужную конфигурацию полей
+            current_config = SUB_TABLE_FIELDS if "UID_Родителя" in df.columns else FIELDS_CONFIG
+            for col, t in current_config.items():
                 if col in df.columns:
                     if t is int:
-                        df[col] = df[col].fillna(0).astype(float).astype(int)
+                        # Принудительно очищаем от NaN и переводим в целые числа
+                        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
                     else:
-                        df[col] = df[col].fillna("").astype(str)
+                        # Намертво глушим float64 в текстовых колонках, превращая всё в чистые строки
+                        df[col] = df[col].fillna("").astype(str).str.strip()
+            # -------------------------------------------------------------
+            # --- БЕЗОПАСНЫЙ И УМНЫЙ ПЕРЕСЧЕТ КЛЮЧЕЙ UID ---
+            # Проверяем, какая именно таблица сейчас загружается программой
+            if "UID_Родителя" in df.columns:
+                # Для подчиненной таблицы: ВСЕГДА жестко и принудительно пересчитываем UID.
+                # Формула: берем UID_Родителя этой строки и прибавляем к нему её физический номер (idx)
+                df["UID"] = [f"{str(row['UID_Родителя'])}__sub_{idx}" for idx, row in df.iterrows()]
+            else:
+                # Для основной таблицы рейсов: пересчитываем UID только для пустых или новых строк
+                if "UID" not in df.columns:
+                    df["UID"] = [calculate_safe_row_uid(row) for _, row in df.iterrows()]
+                else:
+                    df["UID"] = df["UID"].fillna("")
+                    for idx, row in df.iterrows():
+                        current_uid = str(row["UID"]).strip()
+                        if not current_uid or current_uid in ("", "nan", "empty_"):
+                            df.at[idx, "UID"] = calculate_safe_row_uid(row)
+            # --- КОНЕЦ ИСПРАВЛЕНИЯ В HELPERS.PY ---
+
             return df
         except Exception:
             return pd.DataFrame(columns=list(FIELDS_CONFIG.keys()))
@@ -240,22 +247,10 @@ def load_data(file_name: str) -> pd.DataFrame:
 
 
 def save_data(df: pd.DataFrame, file_name: str) -> None:
-    """Сохраняет DataFrame в Excel с защитой от блокировки файла."""
+    """Сохраняет DataFrame в Excel. При ошибке доступа бросает PermissionError."""
     if not isinstance(df, pd.DataFrame) or not isinstance(file_name, str):
         raise TypeError("Неверные типы параметров в процедуре save_data.")
-    from tkinter import messagebox
-
-    while True:
-        try:
-            df.to_excel(file_name, index=False)
-            break
-        except PermissionError:
-            response = messagebox.askretrycancel(
-                "Ошибка доступа",
-                f"Файл '{file_name}' открыт в Excel.\n\nПожалуйста, закройте его и нажмите 'Повторить'.",
-            )
-            if not response:
-                break
+    df.to_excel(file_name, index=False)
 
 
 def reset_form_fields(inputs_dict: dict) -> None:
@@ -278,23 +273,51 @@ def delete_row_from_df(df: pd.DataFrame, index_to_delete: int) -> pd.DataFrame:
     return df
 
 
-def is_exact_match(new_data: dict, template_row: pd.Series) -> bool:
-    """Проверяет, совпадает ли измененная форма полностью с шаблоном."""
-    if not isinstance(new_data, dict) or not isinstance(
-        template_row, pd.Series
-    ):
-        raise TypeError("Неверные типы параметров.")
-    for field, value in new_data.items():
-        template_val = (
-            str(int(template_row[field]))
-            if FIELDS_CONFIG[field] is int and pd.notna(template_row[field])
-            else str(template_row[field])
-        )
-        if template_val == "nan" or template_val == "0":
-            template_val = ""
-        if value.strip() != template_val.strip():
-            return False
-    return True
+def _to_int(v):
+    """Приводит значение к int для сравнения (пусто/NaN -> 0)."""
+    if pd.isna(v):
+        return 0
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _to_str(v):
+    """Приводит значение к строке для сравнения (пусто/NaN -> '')."""
+    if pd.isna(v):
+        return ""
+    return str(v).strip()
+
+
+def find_full_duplicate(df: pd.DataFrame, row_dict: dict, exclude_index: int = None):
+    """Ищет в df строку, полностью совпадающую с row_dict (без учёта UID).
+    Возвращает индекс найденной строки или None."""
+    compare_cols = [c for c in df.columns if c != "UID"]
+    for idx, row in df.iterrows():
+        if exclude_index is not None and idx == exclude_index:
+            continue
+        same = True
+        for c in compare_cols:
+            if FIELDS_CONFIG.get(c) is int:
+                a, b = _to_int(row[c]), _to_int(row_dict.get(c))
+            else:
+                a, b = _to_str(row[c]), _to_str(row_dict.get(c))
+            if a != b:
+                same = False
+                break
+        if same:
+            return idx
+    return None
+
+
+def _fmt_report_value(v):
+    """Форматирует значение ячейки для текстового отчета без искажений."""
+    if pd.isna(v):
+        return ""
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v)
 
 
 def export_to_txt(df: pd.DataFrame, target_file_path: str) -> None:
@@ -315,21 +338,60 @@ def export_to_txt(df: pd.DataFrame, target_file_path: str) -> None:
             for idx, row in df.iterrows():
                 f.write(f"--- ЗАПИСЬ № {idx + 1} ---\n")
                 for col in df.columns:
-                    val = (
-                        ""
-                        if pd.isna(row[col])
-                        else str(row[col]).replace(".0", "")
-                    )
+                    val = _fmt_report_value(row[col])
                     f.write(f"{col}: {val}\n")
                 f.write("\n" + "." * 40 + "\n\n")
     except Exception as e:
-        from tkinter import messagebox
-
         messagebox.showerror("Ошибка", f"Не удалось записать отчет:\n{str(e)}")
+
+
+def export_to_xlsx_with_catalogs(main_df: pd.DataFrame, sub_df: pd.DataFrame,
+                                  file_path: str,
+                                  catalog_fields: list = None) -> None:
+    """
+    Генерирует XLSX-отчет: основная таблица рейсов с добавлением полей из
+    подчинённой таблицы каталогов. Если у рейса несколько записей каталога —
+    каждая выводится отдельной строкой (JOIN по UID).
+    """
+    if catalog_fields is None:
+        catalog_fields = ["каталоги", "наличие метаданных",
+                          "метаданные добавлены в БМД ЛГА",
+                          "Наличие 2-ой копии данных",
+                          "№ диска с копией", "каталоги с копией"]
+
+    rows = []
+    for _, main_row in main_df.iterrows():
+        uid = str(main_row.get("UID", "")).strip()
+        matched = sub_df[sub_df["UID_Родителя"].astype(str).str.strip() == uid] if uid else pd.DataFrame()
+        if matched.empty:
+            # рейс без каталогов — одна строка с пустыми полями каталогов
+            row = {col: _fmt_report_value(main_row.get(col, "")) for col in main_df.columns}
+            for cf in catalog_fields:
+                row[cf] = ""
+            rows.append(row)
+        else:
+            for _, sub_row in matched.iterrows():
+                row = {col: _fmt_report_value(main_row.get(col, "")) for col in main_df.columns}
+                for cf in catalog_fields:
+                    row[cf] = _fmt_report_value(sub_row.get(cf, ""))
+                rows.append(row)
+
+    result_df = pd.DataFrame(rows)
+
+    # порядок колонок: сначала основные (без UID), потом каталоги
+    main_cols = [c for c in main_df.columns if c != "UID"]
+    out_cols = main_cols + catalog_fields
+    result_df = result_df[out_cols]
+
+    try:
+        result_df.to_excel(file_path, index=False, engine="openpyxl")
+    except Exception as e:
+        messagebox.showerror("Ошибка", f"Не удалось сохранить XLSX-отчет:\n{str(e)}")
 
 def get_card_context(df, current_index: int) -> dict:  # (0)
     """Определяет данные для 3-х карточек режима «Детальный просмотр»."""  # (4)
-    import pandas as pd  # (4)
+
+    # import pandas as pd  # (4)
     if not isinstance(df, pd.DataFrame):  # (4)
         raise TypeError("Параметр 'df' должен быть объектом класса pandas.DataFrame")  # (8)
     if not isinstance(current_index, int):  # (4)
@@ -385,85 +447,331 @@ def get_file_hash(file_path: str) -> str:
         return ""
 
 
-def clean_duplicate_backups(backup_dir="backups", target_filename="voyage_data.xlsx", days_interval=10):
-    """
-    Проверяет дату последней очистки по файлу-маркеру. Если прошло >= days_interval дней,
-    распаковывает архивы во временную папку, вычисляет хэш вложенного Excel-файла
-    и удаляет дубликаты, освобождая их из памяти перед удалением (фикс WinError 32).
-    """
-    marker_file = os.path.join(backup_dir, ".last_clean.txt")
-    now = datetime.now()
+def get_file_hash_from_bytes(data: bytes) -> str:
+    """Вычисляет MD5-хэш содержимого байтов (в памяти)."""
+    return hashlib.md5(data).hexdigest()
 
-    # Проверяем и создаем папку бэкапов, если её нет
+
+def get_xlsx_inner_hashes(data) -> dict:
+    """
+    Возвращает {внутренний_член_xlsx: md5} для xlsx-документа.
+    Принимает путь к файлу или байты содержимого (io.BytesIO).
+    Служебные метаданные (docProps/* — дата последнего сохранения, автор и т.п.)
+    исключаются: они меняются при пересохранении, хотя данные остаются прежними.
+    """
+    try:
+        if isinstance(data, bytes):
+            zf = zipfile.ZipFile(io.BytesIO(data), 'r')
+        else:
+            zf = zipfile.ZipFile(data, 'r')
+        with zf:
+            result = {}
+            for info in zf.infolist():
+                if info.filename.startswith("docProps/"):
+                    continue
+                result[info.filename] = get_file_hash_from_bytes(zf.read(info))
+            return result
+    except Exception:
+        return {}
+
+
+def get_zip_content_hashes(zip_path: str) -> dict:
+    """
+    Возвращает {имя_вложенного_файла: кортеж_хэшей_внутренних_членов} для zip-архива бэкапа.
+    Сравнение идёт по содержимому ВЛОЖЕННЫХ xlsx (без служебных docProps/*),
+    а не по байтам самого архива и не по байтам внешних оболочек.
+    """
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            result = {}
+            for info in zf.infolist():
+                data = zf.read(info)
+                inner = get_xlsx_inner_hashes(data)
+                if inner:
+                    result[info.filename] = tuple(sorted(inner.items()))
+            return result
+    except Exception:
+        return {}
+
+
+def get_latest_backup(backup_dir=BACKUP_DIR):
+    """Возвращает путь к самому свежему архиву в каталоге (или None, если архивов нет)."""
+    zips = glob.glob(os.path.join(backup_dir, "*.zip"))
+    if not zips:
+        return None
+    return max(zips, key=os.path.getmtime)
+
+
+def files_match_archive(file_paths, zip_path) -> bool:
+    """
+    Сравнивает текущие файлы с содержимым zip-архива бэкапа.
+    Возвращает True, если для каждого файла из списка в архиве есть вложенный файл
+    с тем же именем и его ДАННЫЕ (внутренние члены xlsx, без служебных docProps/*)
+    совпадают. Сравнение по содержимому, а не по байтам оболочек.
+    Файлов, которых нет на диске, в сравнении не участвуют.
+    """
+    if not zip_path or not os.path.exists(zip_path):
+        return False
+
+    existing_files = [f for f in file_paths if os.path.exists(f)]
+    if not existing_files:
+        return False
+
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            archived_names = set(zf.namelist())
+            for file_path in existing_files:
+                name = os.path.basename(file_path)
+                if name not in archived_names:
+                    return False
+                if get_xlsx_inner_hashes(zf.read(name)) != get_xlsx_inner_hashes(file_path):
+                    return False
+        return True
+    except Exception:
+        return False
+
+
+def count_backups(backup_dir=BACKUP_DIR):
+    """Возвращает количество zip-архивов в каталоге бэкапов."""
+    if not os.path.exists(backup_dir):
+        return 0
+    return len(glob.glob(os.path.join(backup_dir, "*.zip")))
+
+
+def _delete_oldest_backups(backup_dir, count):
+    """Удаляет самые старые архивы. Возвращает количество фактически удалённых."""
+    zips = glob.glob(os.path.join(backup_dir, "*.zip"))
+    zips.sort(key=os.path.getmtime)
+    deleted = 0
+    for old_zip in zips[:count]:
+        try:
+            os.remove(old_zip)
+            deleted += 1
+        except Exception:
+            pass
+    return deleted
+
+
+def create_backup(file_paths, backup_dir=BACKUP_DIR, enforce_limit=True):
+    """
+    Создает архив 'backup_дата_время.zip' с текущим содержимым файлов.
+    Лимит MAX_BACKUPS при создании не отменяет архивацию:
+      - если в папке УЖЕ был лимит MAX_BACKUPS (было ровно MAX) — создаём архив
+        и удаляем 1 самый старый (лимит снова соблюдён, предупреждения нет);
+      - если в папке УЖЕ было БОЛЬШЕ MAX_BACKUPS — создаём архив, удаляем 1 самый
+        старый и выводим предупреждение (переполнение остаётся).
+    """
     if not os.path.exists(backup_dir):
         os.makedirs(backup_dir)
 
-    # Логика контроля интервала (не чаще чем раз в 10 дней)
-    if os.path.exists(marker_file):
-        try:
-            with open(marker_file, "r") as f:
-                last_clean_str = f.read().strip()
-                last_clean_date = datetime.strptime(last_clean_str, "%Y-%m-%d")
+    existing_files = [f for f in file_paths if os.path.exists(f)]
+    if not existing_files:
+        return ""
 
-            # Если 10 дней еще не прошло — тихо выходим, не нагружая процессор
-            if now - last_clean_date < timedelta(days=days_interval):
-                return
-        except Exception:
-            # Если маркер поврежден, игнорируем ошибку и проводим уборку
-            pass
+    # Считаем количество ДО создания — от него зависит, было ли превышение
+    count_before = count_backups(backup_dir)
 
-    # Находим все zip-архивы и сортируем их от новых к старым
-    backup_files = glob.glob(os.path.join(backup_dir, "*.zip"))
-    backup_files.sort(key=os.path.getmtime, reverse=True)
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    zip_name = os.path.join(backup_dir, f"backup_{timestamp}.zip")
 
-    if not backup_files:
+    # Защита от совпадения имени при нескольких вызовах в одну секунду
+    counter = 1
+    while os.path.exists(zip_name):
+        zip_name = os.path.join(backup_dir, f"backup_{timestamp}_{counter}.zip")
+        counter += 1
+
+    try:
+        with zipfile.ZipFile(zip_name, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for file_path in existing_files:
+                zipf.write(file_path, os.path.basename(file_path))
+    except Exception as e:
+        print(f"Ошибка создания бэкапа: {e}")
+        return ""
+
+    if enforce_limit and count_before >= MAX_BACKUPS:
+        _delete_oldest_backups(backup_dir, 1)
+        if count_before > MAX_BACKUPS:
+            _show_limit_warning(count_before + 1)
+
+    return zip_name
+
+
+def _show_limit_warning(n):
+    """Выводит предупреждение о превышении лимита архивов (в консоль и GUI)."""
+    msg = (f"Превышен лимит архивов: в папке backups {n} шт. при максимуме "
+           f"{MAX_BACKUPS} (MAX_BACKUPS). Бэкап создан, но каталог переполнен. "
+           f"Очистите каталог вручную, увеличьте лимит или удалите .last_clean "
+           f"для автоочистки.")
+    print(f"[БЭКАП] {msg}")
+    try:
+        messagebox.showwarning("Превышен лимит архивов", msg)
+    except Exception:
+        pass
+
+
+def clean_duplicate_backups(backup_dir=BACKUP_DIR):
+    """
+    Плановая очистка папки бэкапов (раз в CLEAN_INTERVAL_DAYS по маркеру .last_clean).
+    Этапы:
+      1) удаление ДУБЛИКАТОВ (копий) — архивов с тем же содержимым данных, что и у
+         уже сохранённого (сравнение по хэшам файлов В АРХИВЕ, а не самого архива).
+         Копии удаляются автоматически, без запроса;
+      2) если после этого архивов БОЛЬШЕ лимита MAX_BACKUPS — запрос пользователю:
+         удалить ли устаревшие архивы сверх лимита (Да/Нет);
+      3) если после всего лимит всё ещё превышен (пользователь отказался) — вывод
+         напоминания о вариантах: смена лимита, ручная очистка, принудительная
+         очистка через удаление маркера .last_clean.
+    В консоль выводится раздельная статистика по копиям и устаревшим.
+    """
+    if not os.path.exists(backup_dir):
         return
 
+    current_date = datetime.now()
+    deleted_duplicates = 0  # Удалено копий (дубликатов по содержимому)
+    deleted_old = 0         # Удалено устаревших (сверх лимита по количеству)
+
+    # ПРОВЕРКА МЕТКИ ПО ПОНЯТНОЙ ДАТЕ (маркер лежит внутри каталога бэкапов)
+    last_clean_file = os.path.join(backup_dir, ".last_clean")
+    if os.path.exists(last_clean_file):
+        try:
+            with open(last_clean_file, 'r') as f:
+                last_clean_str = f.read().strip()
+            last_clean_date = datetime.strptime(last_clean_str, "%Y-%m-%d")
+
+            days_passed = (current_date - last_clean_date).days
+            if days_passed < CLEAN_INTERVAL_DAYS:
+                return  # 10 дней еще не прошло, уходим
+        except Exception:
+            pass
+
+    # ЭТАП 1: УДАЛЕНИЕ КОПИЙ (дубликатов) ПО ХЭШУ СОДЕРЖИМОГО В АРХИВАХ
+    zips = glob.glob(os.path.join(backup_dir, "*.zip"))
+    zips.sort(key=os.path.getmtime)
+
     seen_hashes = set()
-    deleted_count = 0
-
-    # Создаем изолированную временную папку для распаковки
-    with tempfile.TemporaryDirectory() as temp_dir:
-        for archive_path in backup_files:
-            file_hash = None
-
+    unique_zips = []
+    for old_zip in zips:
+        h = tuple(sorted(get_zip_content_hashes(old_zip).items()))
+        if h in seen_hashes:
             try:
-                # 1. Открываем архив строго для извлечения файла и расчета хэша
-                with zipfile.ZipFile(archive_path, 'r') as zip_ref:
-                    if target_filename in zip_ref.namelist():
-                        zip_ref.extract(target_filename, path=temp_dir)
-                        extracted_file_path = os.path.join(temp_dir, target_filename)
+                os.remove(old_zip)
+                deleted_duplicates += 1  # Удаляем копию (хэш-дубликат содержимого)
+            except Exception:
+                pass
+        else:
+            seen_hashes.add(h)
+            unique_zips.append(old_zip)
 
-                        # Вычисляем хэш функцией из helpers.py
-                        file_hash = get_file_hash(extracted_file_path)
+    # ЭТАП 2: ПРИ ПРЕВЫШЕНИИ ЛИМИТА — ЗАПРОС ПЕРЕД УДАЛЕНИЕМ УСТАРЕВШИХ АРХИВОВ
+    excess = len(unique_zips) - MAX_BACKUPS
+    if excess > 0:
+        msg = (f"После удаления копий в папке {os.path.basename(backup_dir)} осталось "
+               f"{len(unique_zips)} архивов при лимите {MAX_BACKUPS} (MAX_BACKUPS) — "
+               f"превышение на {excess} шт.\n\n"
+               f"Удалить {excess} самых старых архивов (устаревших) сейчас?\n"
+               f"«Да» — удалить устаревшие архивы до лимита.\n"
+               f"«Нет» — оставить все как есть (лимит будет превышен).")
+        print(f"[ОЧИСТКА] {msg}")
+        try:
+            if messagebox.askyesno("Превышен лимит архивов", msg):
+                deleted_old = _delete_oldest_backups(backup_dir, excess)
+                print(f"[ОЧИСТКА] Удалено устаревших архивов: {deleted_old} шт.")
+        except Exception:
+            pass
 
-                        # Сразу удаляем временный Excel-файл из temp-папки
-                        os.remove(extracted_file_path)
-                    else:
-                        print(f"Внимание: файл {target_filename} не найден в {os.path.basename(archive_path)}")
-            except Exception as e:
-                print(f"Ошибка при чтении архива {os.path.basename(archive_path)}: {e}")
-                continue
+    # ВЫВОД СООБЩЕНИЯ ОБ ОЧИСТКЕ (раздельно: копии и устаревшие)
+    if deleted_duplicates > 0 or deleted_old > 0:
+        parts = []
+        if deleted_duplicates > 0:
+            parts.append(f"удалено копий (дубликатов): {deleted_duplicates} шт.")
+        if deleted_old > 0:
+            parts.append(f"удалено устаревших (сверх лимита): {deleted_old} шт.")
+        print(f"[ОЧИСТКА] Обнаружен день плановой проверки. {', '.join(parts)}")
+    else:
+        print("[ОЧИСТКА] День плановой проверки: папка бэкапов уже в идеальном состоянии.")
 
-            # 2. ВАЖНО: Мы вышли из блока 'with'. Архив гарантированно закрыт!
-            # Теперь Windows не заблокирует файл, и его можно безопасно удалить.
-            if file_hash is not None:
-                if file_hash in seen_hashes:
-                    try:
-                        os.remove(archive_path)
-                        print(f"Удален дубликат бэкапа (идентичные данные): {os.path.basename(archive_path)}")
-                        deleted_count += 1
-                    except Exception as e:
-                        print(f"Не удалось удалить файл {os.path.basename(archive_path)}: {e}")
-                else:
-                    # Если хэш уникальный (данные новые) — запоминаем его
-                    seen_hashes.add(file_hash)
+    # ЭТАП 3: ЕСЛИ ПОСЛЕ ВСЕГО ВСЁ ЕЩЁ ПРЕВЫШЕН ЛИМИТ — НАПОМНИТЬ О ВАРИАНТАХ
+    remaining = count_backups(backup_dir)
+    if remaining > MAX_BACKUPS:
+        print(f"[ОЧИСТКА] Внимание: лимит {MAX_BACKUPS} (MAX_BACKUPS) всё ещё превышен "
+               f"({remaining} архивов). Увеличьте MAX_BACKUPS в helpers.py, удалите лишние "
+               f"архивы вручную либо проведите очистку (удалите файл .last_clean "
+               f"в каталоге бэкапов и перезапустите программу).")
 
-    # Обновляем дату в файле-маркере, чтобы зафиксировать успешную уборку
+    # ЗАПИСЬ СВЕЖЕЙ ПОНЯТНОЙ ДАТЫ В МЕТКУ
     try:
-        with open(marker_file, "w") as f:
-            f.write(now.strftime("%Y-%m-%d"))
-        if deleted_count > 0:
-            print(f"Генеральная уборка завершена. Удалено дубликатов: {deleted_count}. Следующая через {days_interval} дней.")
-    except Exception as e:
-        print(f"Не удалось обновить маркер очистки: {e}")
+        with open(last_clean_file, 'w') as f:
+            f.write(current_date.strftime("%Y-%m-%d"))
+    except Exception:
+        pass
+
+
+# =====================================================================
+# КОНФИГУРАЦИЯ ПОДЧИНЁННОЙ ТАБЛИЦЫ (Учёт каталогов и метаданных)
+# =====================================================================
+
+SUB_FILE_NAME = "voyage_sub_data.xlsx"
+
+SUB_TABLE_FIELDS = {
+    "UID_Родителя"                  : str,  # Внешний ключ для связи
+    "каталоги"                      : str,  # Путь к каталогу с данными
+    "наличие метаданных"            : int,  # 0 или 1
+    "метаданные добавлены в БМД ЛГА": int,  # 0 или 1
+    "Наличие 2-ой копии данных"     : int,  # 0 или 1
+    "№ диска с копией"              : int,  # Номер диска (число)
+    "каталоги с копией"             : str  # Путь к каталогу с копией
+}
+
+SUB_TABLE_HEADINGS_SHORT = {
+    "UID_Родителя"                  : "Ключ связи",
+    "каталоги"                      : "Каталоги (исходные)",
+    "наличие метаданных"            : "Наличие МД",
+    "метаданные добавлены в БМД ЛГА": "В БМД ЛГА",
+    "Наличие 2-ой копии данных"     : "2-я копия",
+    "№ диска с копией"              : "№ диска копии",
+    "каталоги с копией"             : "Каталоги копии"
+}
+
+
+def generate_row_uid(row_dict: dict) -> str:
+    """Генерирует иммунный к сортировкам UID на основе ключевых полей рейса."""
+    pp = str(row_dict.get("№ п/п", "0")).split('.')[0]  # убираем .0 если есть
+    vessel = str(row_dict.get("Судно", "")).strip()
+    voyage_num = str(row_dict.get("№ рейса", "")).split('.')[0]
+    year = str(row_dict.get("Год", "")).split('.')[0]
+
+    basis_string = f"{pp}_{vessel}_{voyage_num}_{year}"
+    hash_sha = hashlib.md5(basis_string.encode("utf-8")).hexdigest()[:8]
+
+    return f"{pp}_{hash_sha}"
+
+
+def check_and_clean_relations(main_df, sub_df):
+    """
+    Проверяет целостность связей между основной и подчиненной таблицами.
+    Удаляет записи-сироты из подчиненной таблицы, у которых нет родителя.
+    """
+    if main_df.empty or sub_df.empty:
+        return sub_df
+
+    # 1. Извлекаем список всех реально существующих UID из основной таблицы рейсов
+    # (Если вы еще не перешли на физическую колонку "UID", используйте "id" / "№ п/п")
+    existing_parent_keys = set(main_df["UID"].dropna().astype(str)) if "UID" in main_df.columns else set(main_df["id"].dropna().astype(str))
+
+    # Определяем имя колонки связи в подчиненной таблице
+    sub_key_col = "UID_Родителя" if "UID_Родителя" in sub_df.columns else "№ п/п"
+
+    # 2. Фильтруем подчиненную таблицу: оставляем ТОЛЬКО те строки,
+    # чей ключ связи действительно присутствует в списке существующих рейсов
+    initial_count = len(sub_df)
+
+    # Дополнительно очищаем строки с пустыми или некорректными индексами связи
+    sub_df_cleaned = sub_df[
+        sub_df[sub_key_col].dropna().astype(str).isin(existing_parent_keys)
+    ].reset_index(drop=True)
+
+    removed_count = initial_count - len(sub_df_cleaned)
+    if removed_count > 0:
+        print(f"[Контроль целостности]: Обнаружено и удалено {removed_count} записей-сирот из подчиненной таблицы.")
+
+    return sub_df_cleaned

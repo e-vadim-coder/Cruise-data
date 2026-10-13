@@ -1,28 +1,69 @@
 # -*- coding: utf-8 -*-
 # main.py
+import os
+import sys
+from datetime import datetime
+# При запуске .exe переходим в папку самого исполняемого файла,
+# чтобы программа находила файлы данных (voyage_data.xlsx и др.)
+# независимо от того, из какого каталога её запустили.
+if getattr(sys, 'frozen', False):
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    os.chdir(exe_dir)
+    # Перенаправляем print в лог-файл рядом с .exe
+    log_path = os.path.join(exe_dir, "voyage.log")
+    sys.stdout = open(log_path, "a", encoding="utf-8")
+    print(f"\n{'='*50}")
+    print(f"VoyageManager запуск: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
+    print(f"{'='*50}")
 import tkinter as tk  # (0)
-from tkinter import filedialog, font, messagebox, ttk  # (0)
 import pandas as pd  # (0)
-
+from tkinter import filedialog, font, messagebox, ttk  # (0)
 from helpers import (  # (0)
     FIELDS_CONFIG,  # (4)
+    apply_field_type,
     DICTIONARIES,
     TABS_CONFIG,
     TABLE_HEADINGS_SHORT,
     create_backup,
     clean_duplicate_backups,
     get_file_hash,
+    get_latest_backup,
+    files_match_archive,
+    BACKUP_DIR,
     delete_row_from_df,  # (4)
     export_to_txt,  # (4)
-    is_exact_match,  # (4)
+    export_to_xlsx_with_catalogs,
+    find_full_duplicate,
     load_data,  # (4)
     reset_form_fields,  # (4)
     save_data,  # (4)
     validate_type,  # (4)
-    get_card_context  # (0)
+    get_card_context, # (4)
+    SUB_FILE_NAME,
+    SUB_TABLE_FIELDS,
+    SUB_TABLE_HEADINGS_SHORT,
+    check_and_clean_relations,
+    generate_row_uid
 )  # (0)
+from issue_manager import IssueManagerWindow  # (0)
 
 FILE_NAME = "voyage_data.xlsx"  # (0)
+
+
+def _save_with_retry(df, file_name):
+    """Сохраняет DataFrame с диалогом «Повторить/Отмена» при блокировке файла.
+    Возвращает True, если сохранение удалось, иначе False."""
+    while True:
+        try:
+            save_data(df, file_name)
+            return True
+        except PermissionError:
+            if not messagebox.askretrycancel(
+                "Ошибка доступа",
+                f"Файл '{file_name}' открыт в Excel.\n\nПожалуйста, закройте его и нажмите 'Повторить'.",
+            ):
+                return False
+
 
 class VoyageAppTabs:  # (0)
 
@@ -32,9 +73,28 @@ class VoyageAppTabs:  # (0)
         self.root.geometry("1400x980")  # (8)
 
         self.df = load_data(FILE_NAME)  # (8)
+
+        # Загрузка связанных данных каталогов
+        self.sub_df = load_data(SUB_FILE_NAME)
+
+        # Автоматическая проверка и очистка сирот при старте программы
+        # from helpers import check_and_clean_relations
+        sub_before = len(self.sub_df)
+        self.sub_df = check_and_clean_relations(self.df, self.sub_df)
+        # Сохраняем чистый результат на диск ТОЛЬКО если реально были удалены сироты.
+        # Иначе не перезаписываем файл: pandas меняет байты файла при каждом сохранении,
+        # из-за чего MD5 отличается при идентичных данных и создаётся лишний бэкап.
+        if len(self.sub_df) != sub_before:
+            _save_with_retry(self.sub_df, SUB_FILE_NAME)
+
+        if self.sub_df.empty or "UID_Родителя" not in self.sub_df.columns:
+            self.sub_df = pd.DataFrame(columns=list(SUB_TABLE_FIELDS.keys()))
+
         self.selected_index = None  # (8)
-        self.template_index = None  # (8)
         self.inputs = {}  # (8)
+        # Постоянный фильтр (на сессию): словарь «поле: критерий» или None.
+        # Применяется к таблице до явной отмены кнопкой «Сбросить фильтр».
+        self.current_filter = None
 
         self.btn_colors = {  # (8)
             "search"  : "#2980b9",  # (12)
@@ -47,8 +107,10 @@ class VoyageAppTabs:  # (0)
         }  # (8)
 
         self.create_widgets()  # (8)
+        self.recompute_column_widths()  # (8)
         self.refresh_table()  # (8)
         self.tree.bind("<<TreeviewSelect>>", self.on_row_select)  # (8)
+        self.sub_table_visible = False  # По умолчанию скрыта
 
     def create_widgets(self):  # (4)
         # --- ВКЛАДКИ ДЛЯ ВВОДА ДАННЫХ ---  # (8)
@@ -61,6 +123,8 @@ class VoyageAppTabs:  # (0)
 
             row, col = 0, 0  # (12)
             for field in fields:  # (12)
+                if field == "UID":  # не показывать поле "UID"
+                    continue
                 lbl = tk.Label(  # (16)
                     tab_frame, text=field + ":", font=("Arial", 10)  # (20)
                 )  # (16)
@@ -85,7 +149,7 @@ class VoyageAppTabs:  # (0)
         btn_frame = tk.Frame(self.root, pady=10)  # (8)
         btn_frame.pack(fill="x", padx=10)  # (8)
 
-        tk.Button(  # (8)
+        self.btn_search = tk.Button(  # (8)
             btn_frame,  # (12)
             text="🔍 Поиск",  # (12)
             bg=self.btn_colors["search"],  # (12)
@@ -93,7 +157,17 @@ class VoyageAppTabs:  # (0)
             font=("Arial", 10, "bold"),  # (12)
             padx=10,  # (12)
             command=self.search_data,  # (12)
-        ).pack(side="left", padx=3)  # (8)
+        )  # (8)
+        self.btn_search.pack(side="left", padx=3)  # (8)
+
+        # Индикатор режима фильтра (показывает, активен ли постоянный фильтр)
+        self.filter_status = tk.Label(
+            btn_frame,
+            text="",
+            font=("Arial", 9, "bold"),
+            fg="#c0392b",
+        )
+        self.filter_status.pack(side="left", padx=15)
 
         tk.Button(  # (8)
             btn_frame,  # (12)
@@ -145,6 +219,26 @@ class VoyageAppTabs:  # (0)
         )  # (8)
         self.btn_detail_view.pack(side=tk.LEFT, padx=2)  # (8)
 
+        # Кнопка переключения видимости подчинённой таблицы (в стиле просмотра)
+        self.toggle_btn = tk.Button(
+            btn_frame,
+            text="Каталоги рейса",  # Сделаем название покороче, чтобы влезало
+            bg="#d2b48c",  # Тот же самый светло-коричневый цвет
+            font=("Arial", 10),  # Такой же аккуратный нежирный шрифт
+            command=self.toggle_sub_table
+        )
+        self.toggle_btn.pack(side=tk.LEFT, padx=2)  # Точно такая же упаковка в ряд
+
+        # Кнопка «Журнал выдачи данных» (режим выдачи для выбранного рейса)
+        self.btn_issue = tk.Button(
+            btn_frame,
+            text="Журнал выдачи данных",
+            bg="#2c3e50",
+            fg="white",
+            font=("Arial", 10, "bold"),
+            command=self.open_issue_journal,
+        )
+        self.btn_issue.pack(side=tk.LEFT, padx=3)
 
         tk.Button(  # (8)
             btn_frame,  # (12)
@@ -155,6 +249,16 @@ class VoyageAppTabs:  # (0)
             padx=10,  # (12)
             command=self.clear_form,  # (12)
         ).pack(side="left", padx=3)  # (8)
+
+        tk.Button(  # Сброс постоянного фильтра
+            btn_frame,
+            text="🗑 Сбросить фильтр",
+            bg=self.btn_colors["clear"],
+            fg="white",
+            font=("Arial", 10, "bold"),
+            padx=10,
+            command=self.reset_filter,
+        ).pack(side="left", padx=3)
 
         # в самом конце ряда:
         tk.Button(
@@ -195,10 +299,148 @@ class VoyageAppTabs:  # (0)
         self.tree.pack(fill="both", expand=True)  # (8)
 
         for field in FIELDS_CONFIG.keys():  # (8)
+            if field == "UID":  # не показывать поле "UID"
+                continue
             # Берем короткое имя из словаря, если его там нет — оставляем длинное
             short_text = TABLE_HEADINGS_SHORT.get(field, field)
             self.tree.heading(field, text=short_text)
             self.tree.column(field, width=125, anchor="center")  # (12)
+
+        # --- БЛОК ПОДЧИНЁННОЙ ТАБЛИЦЫ ---
+        self.sub_frame = tk.LabelFrame(self.root, text=" Детализация каталогов и метаданных для выбранного рейса ", font=("Arial", 10, "bold"))
+        # sub_frame.pack(fill="x", expand=False, padx=10, pady=5)
+
+        # Сетка: Таблица слева, поля ввода справа
+        sub_table_container = tk.Frame(self.sub_frame)
+        sub_table_container.pack(side="left", fill="both", expand=True, padx=5, pady=5)
+
+        self.sub_tree = ttk.Treeview(sub_table_container, columns=list(SUB_TABLE_FIELDS.keys()), show="headings", height=5)
+        #  исправление
+        self.sub_tree.bind("<<TreeviewSelect>>", self.on_sub_row_select)
+        # -----------------
+        sub_scroll_x = tk.Scrollbar(sub_table_container, orient="horizontal", command=self.sub_tree.xview)
+        sub_scroll_y = tk.Scrollbar(sub_table_container, orient="vertical", command=self.sub_tree.yview)
+        self.sub_tree.configure(xscrollcommand=sub_scroll_x.set, yscrollcommand=sub_scroll_y.set)
+
+        self.sub_tree.pack(fill="both", expand=True)
+        sub_scroll_x.pack(fill="x")
+        sub_scroll_y.pack(side="right", fill="y")
+
+        for field in SUB_TABLE_FIELDS.keys():
+            short_text = SUB_TABLE_HEADINGS_SHORT.get(field, field)
+            self.sub_tree.heading(field, text=short_text)
+            self.sub_tree.column(field, width=110, anchor="center")
+
+        # Панель ввода для подчинённой таблицы (справа)
+        sub_inputs_frame = tk.Frame(self.sub_frame, padx=10)
+        sub_inputs_frame.pack(side="right", fill="y", pady=5)
+
+        self.sub_inputs = {}
+        fields_to_input = [f for f in SUB_TABLE_FIELDS.keys() if f != "UID_Родителя"]
+
+        for idx, field in enumerate(fields_to_input):
+            lbl = tk.Label(sub_inputs_frame, text=field + ":", font=("Arial", 9))
+            lbl.grid(row=idx, column=0, sticky="w", pady=2)
+            entry = tk.Entry(sub_inputs_frame, width=25)
+            entry.grid(row=idx, column=1, padx=5, pady=2)
+            self.sub_inputs[field] = entry
+
+        # Кнопки управления подчинённой таблицей
+        sub_btn_frame = tk.Frame(sub_inputs_frame)
+        sub_btn_frame.grid(row=len(fields_to_input), column=0, columnspan=2, pady=10)
+
+        # Создаем кнопку сохранения изменений в нижней панели
+        self.btn_save_sub = tk.Button(
+            sub_btn_frame, # Имя вашего фрейма для кнопок каталогов
+            text="Сохранить изменения",
+            font=("Arial", 10, "bold"),
+            bg="#d1e7dd", # Симпатичный мягкий зеленый цвет
+            command=self.update_sub_data
+        )
+        self.btn_save_sub.pack(side=tk.LEFT, padx=5)
+        tk.Button(sub_btn_frame, text="➕ Добавить каталог", bg="#27ae60", fg="white", font=("Arial", 9, "bold"),
+                  command=self.add_sub_data).pack(side="left", padx=5)
+        tk.Button(sub_btn_frame, text="❌ Удалить каталог", bg="#c0392b", fg="white", font=("Arial", 9, "bold"),
+                  command=self.delete_sub_data).pack(side="left", padx=5)
+
+    def update_sub_data(self):
+        """Сохраняет измененные данные каталога обратно в Excel"""
+        # Проверяем, выбрана ли строка для редактирования
+        if not hasattr(self, 'selected_sub_index') or self.selected_sub_index is None:
+            messagebox.showwarning("Внимание", "Сначала выберите строку в нижней таблице для редактирования!")
+            return
+
+        # Собираем измененные данные из полей ввода
+        updated_row = {}
+        for field, entry in self.sub_inputs.items():
+            updated_row[field] = apply_field_type(entry.get(), SUB_TABLE_FIELDS[field])
+
+        try:
+            # Нам КРИТИЧЕСКИ важно оставить старые UID и UID_Родителя неизменными,
+            # чтобы не разрушить связи таблиц при сохранении!
+            old_uid = self.sub_df.at[self.selected_sub_index, "UID"]
+            old_parent_uid = self.sub_df.at[self.selected_sub_index, "UID_Родителя"]
+
+            # Записываем обновленные поля в DataFrame по сохраненному индексу
+            for field, value in updated_row.items():
+                self.sub_df.at[self.selected_sub_index, field] = value
+
+            # Возвращаем скрытые ключи на место
+            self.sub_df.at[self.selected_sub_index, "UID"] = old_uid
+            self.sub_df.at[self.selected_sub_index, "UID_Родителя"] = old_parent_uid
+
+            # Физически сохраняем файл на диск
+            if not _save_with_retry(self.sub_df, SUB_FILE_NAME):
+                messagebox.showerror("Ошибка", "Не удалось сохранить изменения: файл открыт в Excel.")
+                return
+
+            # Очищаем нижние поля ввода
+            for entry in self.sub_inputs.values():
+                entry.delete(0, tk.END)
+
+            # Обнулили выбор, чтобы случайно не перезаписать повторно
+            self.selected_sub_index = None
+
+            # Обновляем нижнюю таблицу на экране (вызываем ваш родной метод)
+            self.on_row_select(None)
+            messagebox.showinfo("Успех", "Изменения в каталоге успешно сохранены!")
+
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось сохранить изменения: {e}")
+
+    def on_sub_row_select(self, event):
+        """Автоматически заполняет нижние поля ввода данными выбранного каталога"""
+        selected_items = self.sub_tree.selection()
+        if not selected_items:
+            return
+
+        # Получаем iid строки, который у нас равен индексу в датафрейме self.sub_df
+        sub_idx = int(selected_items[0])
+        self.selected_sub_index = sub_idx  # Запоминаем, какую строку редактируем
+
+        try:
+            sub_row_data = self.sub_df.loc[sub_idx].to_dict()
+            # Пробегаемся по нижним полям ввода и вставляем туда данные
+            for field, entry in self.sub_inputs.items():
+                entry.delete(0, tk.END)
+                val = sub_row_data.get(field, "")
+                if pd.isna(val): val = ""
+                entry.insert(0, str(val))
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось прочитать данные каталога: {e}")
+
+    def toggle_sub_table(self):
+        if self.sub_table_visible:
+            self.sub_frame.pack_forget()
+            self.sub_table_visible = False
+            # Возвращаем стандартный цвет просмотра
+            self.toggle_btn.config(text="Каталоги рейса", bg="#d2b48c", fg="black")
+        else:
+            self.sub_frame.pack(fill="x", expand=False, padx=10, pady=5)
+            self.sub_table_visible = True
+            # При активации делаем её контрастной (например, темно-коричневой с белым текстом)
+            self.toggle_btn.config(text="▲ Скрыть каталоги", bg="#8b5a2b", fg="white")
+            self.on_row_select(None)
 
     def get_form_values(self) -> dict:  # (4)
         return {  # (8)
@@ -220,65 +462,140 @@ class VoyageAppTabs:  # (0)
                 return False  # (16)
         return True  # (8)
 
+    def recompute_column_widths(self):
+        """Пересчитывает ширину колонок по содержимому self.df и кэширует её."""
+        tk_font = font.Font(font="TkDefaultFont")  # (8)
+        widths = {}
+        for field in FIELDS_CONFIG.keys():  # (8)
+            short_text = TABLE_HEADINGS_SHORT.get(field, field)
+            max_len = tk_font.measure(str(short_text)) + 25
+            if not self.df.empty and field in self.df.columns:  # (12)
+                max_val = max(
+                    (tk_font.measure(str("" if pd.isna(val) else val)) for val in self.df[field]),
+                    default=0,
+                )
+                max_len = max(max_len, max_val + 15)  # (12)
+            widths[field] = min(max(max_len, 50), 113)  # (12)
+        self.col_widths = widths
+
     def refresh_table(self, dataframe: pd.DataFrame = None):  # (4)
         for item in self.tree.get_children():  # (8)
             self.tree.delete(item)  # (12)
 
-        display_df = self.df if dataframe is None else dataframe  # (8)
+        # Если передан явный dataframe — показываем его (разовый поиск/выбор).
+        # Иначе показываем данные с учётом активного постоянного фильтра.
+        if dataframe is not None:
+            display_df = dataframe
+        elif self.current_filter:
+            display_df = self._apply_filter(self.df)
+        else:
+            display_df = self.df
 
         # 1. Заполняем таблицу данными
         for idx, row in display_df.iterrows():  # (8)
             values = ["" if pd.isna(val) else val for val in row]  # (12)
             self.tree.insert("", "end", iid=str(idx), values=values)  # (12)
 
-        # 2. Настраиваем автоподбор ширины колонок
-        # Берем стандартный шрифт интерфейса для точного расчета пикселей
-        tk_font = font.Font(font="TkDefaultFont")  # (8)
-
-        for field in FIELDS_CONFIG.keys():  # (8)
-            # Измеряем длину заголовка колонки (+ запас на стрелочку сортировки)
-            # max_len = tk_font.measure(str(field)) + 25  # (12)
-            short_text = TABLE_HEADINGS_SHORT.get(field, field)
-            max_len = tk_font.measure(str(short_text)) + 25
-
-            # Если в таблице есть данные, ищем самую длинную строку в текущей колонке
-            if not display_df.empty:  # (12)
-                # Переводим все значения колонки в текст и находим макс. длину в пикселях
-                col_lens = [  # (16)
-                    tk_font.measure(str("" if pd.isna(val) else val))  # (20)
-                    for val in display_df[field]  # (20)
-                ]  # (16)
-                max_len = max(max_len, max(col_lens) + 15)  # (16)
-
-            # Ограничиваем минимальную и максимальную ширину для красоты (от 70 до 350 пикселей)
-            final_width = min(max(max_len, 50), 113)  # (12)
-
-            # Применяем вычисленную ширину к колонке
+        # 2. Применяем заранее рассчитанную ширину колонок (без повторных замеров)
+        for field, final_width in self.col_widths.items():
             self.tree.column(field, width=final_width, anchor="center", stretch=False, minwidth=final_width)  # (12)
 
-    def on_row_select(self, event):  # (4)
-        selected_items = self.tree.selection()  # (8)
-        if not selected_items:  # (8)
-            return  # (12)
+        # 3. Обновляем индикатор режима фильтра
+        self._update_filter_indicator(display_df)
 
-        # Явно берем индекс первой выбранной строки в Treeview
-        tree_id = selected_items[0]  # (8)
-        self.selected_index = int(tree_id)  # (8)
-        self.template_index = None  # Сбрасываем шаблон при обычном редактировании  # (8)
+    def _update_filter_indicator(self, display_df: pd.DataFrame = None):
+        """Показывает статус фильтра: активен ли он и сколько записей видно."""
+        if not hasattr(self, "filter_status"):
+            return
+        total = len(self.df)
+        shown = len(display_df) if display_df is not None else total
+        if self.current_filter:
+            self.filter_status.config(
+                text=f"Фильтр активен: {shown} из {total} записей",
+                fg="#c0392b",
+            )
+            self.btn_search.config(text="🔍 Фильтр: ON", bg="#c0392b")
+        else:
+            self.filter_status.config(
+                text=f"Все записи: {shown}",
+                fg="#2980b9",
+            )
+            self.btn_search.config(text="🔍 Поиск", bg=self.btn_colors["search"])
 
-        # Получаем данные строки из нашего DataFrame
-        row_data = self.df.loc[self.selected_index]  # (8)
+    def _apply_filter(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Применяет сохранённые критерии self.current_filter к DataFrame.
+        Возвращает отфильтрованную копию (индексы строк сохраняются)."""
+        if not self.current_filter:
+            return df
+        result = df.copy()
+        for field, value in self.current_filter.items():
+            if FIELDS_CONFIG[field] is int:  # (12)
+                result = result[result[field].astype(str) == value]
+            else:
+                result = result[result[field].astype(str).str.contains(value, case=False, na=False)]
+        return result
 
-        reset_form_fields(self.inputs)  # (8)
+    def _collect_filter_criteria(self) -> dict:
+        """Собирает непустые критерии фильтра из полей формы."""
+        criteria = {}
+        for field, value in self.get_form_values().items():
+            if value != "":
+                criteria[field] = value
+        return criteria
 
-        for field, widget in self.inputs.items():  # (8)
-            val = row_data[field]  # (12)
-            if pd.isna(val):  # (12)
-                val = ""  # (16)
-            if isinstance(widget, ttk.Combobox):  # (12)
-                widget.set(str(val))  # (16)
-            else:  # (12)
-                widget.insert(0, str(val))  # (16)
+    def on_row_select(self, event):
+        selected_items = self.tree.selection()
+        if not selected_items:
+            # Если рейс удален и выделение снято — просто стираем всё из нижнего окна
+            for item in self.sub_tree.get_children():
+                self.sub_tree.delete(item)
+            self._clear_sub_selection()
+            return
+
+        tree_id = selected_items[0]
+        self.selected_index = int(tree_id)
+
+        row_data = self.df.loc[self.selected_index].to_dict()
+
+        # --- ФИЛЬТРАЦИЯ ПОДЧИНЁННОЙ ТАБЛИЦЫ ПО UID ---
+        # Берем сохраненный в ячейке UID, чтобы нижнее окно сразу увидело записи
+        try:
+            parent_uid = str(self.df.at[self.selected_index, "UID"]).strip()
+        except Exception:
+            parent_uid = generate_row_uid(row_data)
+
+        # Очищаем старые дочерние строки в UI
+        for item in self.sub_tree.get_children():
+            self.sub_tree.delete(item)
+
+        # Выбираем только те строки, которые соответствуют UID родителя
+        matched_subs = self.sub_df[self.sub_df["UID_Родителя"] == parent_uid]
+        for idx, row in matched_subs.iterrows():
+            values = ["" if pd.isna(val) else val for val in row]
+            self.sub_tree.insert("", "end", iid=str(idx), values=values)
+        # --------------
+
+        # Сбрасываем выбор/поля каталогов при смене рейса, чтобы «Сохранить изменения»
+        # не редактировал каталог предыдущего рейса (у нового рейса может не быть каталогов)
+        self._clear_sub_selection()
+
+        # Старый неизменяемый код заполнения основных вкладок
+        reset_form_fields(self.inputs)
+        for field, widget in self.inputs.items():
+            val = row_data[field]
+            if pd.isna(val): val = ""
+            if isinstance(widget, ttk.Combobox):
+                widget.set(str(val))
+            else:
+                widget.insert(0, str(val))
+
+    def _clear_sub_selection(self):
+        """Снимает выбор каталога и сбрасывает selected_sub_index.
+        Поля ввода каталогов НЕ очищаются: их значения можно использовать
+        как шаблон при «Добавить каталог» для нового рейса."""
+        if hasattr(self, "sub_tree"):
+            self.sub_tree.selection_remove(self.sub_tree.selection())
+        self.selected_sub_index = None
 
     def prepare_template(self):  # (4)
         selected_items = self.tree.selection()  # (8)
@@ -287,10 +604,7 @@ class VoyageAppTabs:  # (0)
             return  # (12)
 
         # Безопасно извлекаем ID выделенной строки из кортежа
-        if isinstance(selected_items, (tuple, list)):  # (8)
-            selected_id = selected_items[0]  # (12)
-        else:  # (8)
-            selected_id = selected_items  # (12)
+        selected_id = selected_items[0] if isinstance(selected_items, (tuple, list)) else selected_items  # (12)
 
         # Выводим диалоговое окно с тремя вариантами действий  # (8)
         choice = messagebox.askyesnocancel(  # (8)
@@ -301,78 +615,69 @@ class VoyageAppTabs:  # (0)
             "«Отмена» — выйти и ничего не менять в таблице"  # (12)
         )  # (8)
 
-        # Сценарий 1: Пользователь нажал «Отмена» (Выходим без изменений)  # (8)
+        # Сценарий 1: Пользователь нажал «Отмена» — сразу выходим
         if choice is None:  # (8)
             return  # (12)
+        # Общая логика для сценариев 2 и 3
+        # Извлекаем строку-шаблон в словарь
+        template_row = self.df.loc[int(selected_id)].to_dict()  # (12)
 
-        # Сценарий 2: Пользователь нажал «Да» (Создать и открыть детальное окно)
-        elif choice is True:  # (8)
-            # Извлекаем строку-шаблон в словарь  # (12)
-            template_row = self.df.loc[int(selected_id)].to_dict()  # (12)
+        # Вычисляем уникальный № п/п (исторический максимум во всей базе + 1)
+        if "№ п/п" in template_row:  # (12)
+            max_pp = self.df["№ п/п"].max()  # (16)
+            template_row["№ п/п"] = int(max_pp) + 1 if pd.notna(max_pp) else 1  # (16)
 
-            # Вычисляем уникальный № п/п (исторический максимум во всей базе + 1)  # (12)
-            if "№ п/п" in template_row:  # (12)
-                max_pp = self.df["№ п/п"].max()  # (16)
-                template_row["№ п/п"] = int(max_pp) + 1 if pd.notna(max_pp) else 1  # (16)
+        # Принудительно генерируем СВЕЖИЙ уникальный UID для новой записи
+        template_row["UID"] = generate_row_uid(template_row)
 
-            # Добавляем новую строку в Pandas DataFrame  # (12)
-            new_index = len(self.df)  # (12)
-            self.df.loc[new_index] = template_row  # (12)
+        # Добавляем новую строку в Pandas DataFrame
+        new_index = len(self.df)  # (12)
+        self.df.loc[new_index] = template_row  # (12)
 
-            # Вызываем ваше родное обновление таблицы
-            self.refresh_table()  # (12)
+        # Синхронно сохраняем обновленную таблицу на диск в Excel
+        if not _save_with_retry(self.df, FILE_NAME):
+            messagebox.showerror("Ошибка", "Не удалось сохранить файл. Запись не создана.")
+            return
 
-            # ИСПРАВЛЕНО: Запускаем окно локально из этого же файла main.py
+        # Обновляем таблицу на экране
+        self.recompute_column_widths()
+        self.refresh_table()  # (12)
+
+        # Сценарий 2: Пользователь нажал «Да» — открываем карточку детального просмотра
+        if choice is True:  # (8)
+            # Снимаем постоянный фильтр: новая запись может не подходить под критерии
+            # фильтра, и пользователь должен видеть её в таблице при редактировании.
+            self.current_filter = None
+            self.refresh_table()
             DetailViewWindow(self, new_index)  # (12)
-            
-        # Сценарий 3: Пользователь нажал «Нет» (Просто копия на том же диске)  # (8)
+
+        # Сценарий 3: Пользователь нажал «Нет» — просто пишем, что всё скопировано
         elif choice is False:  # (8)
-            template_row = self.df.loc[int(selected_id)].to_dict()  # (12)
-
-            # Пересчитываем строго системный № п/п, диски копируются 1 в 1  # (12)
-            if "№ п/п" in template_row:  # (12)
-                max_pp = self.df["№ п/п"].max()  # (16)
-                template_row["№ п/п"] = int(max_pp) + 1 if pd.notna(max_pp) else 1  # (16)
-
-            new_index = len(self.df)  # (12)
-            self.df.loc[new_index] = template_row  # (12)
-
-            # Обновляем таблицу вашим методом
-            self.refresh_table()  # (12)
-
             messagebox.showinfo("Успех", f"Запись успешно скопирована! Новый № п/п: {template_row['№ п/п']}")  # (12)
 
     def clear_form(self):  # (4)
         reset_form_fields(self.inputs)  # (8)
         self.selected_index = None  # (8)
-        self.template_index = None  # (8)
         self.refresh_table()  # (8)
+
     def add_data(self):  # (4)
         data = self.get_form_values()  # (8)
         if not self.validate_form_data(data):  # (8)
             return  # (12)
-        if self.template_index is not None:  # (8)
-            template_row = self.df.loc[self.template_index]  # (12)
-            if is_exact_match(data, template_row):  # (12)
-                messagebox.showerror(  # (16)
-                    "Ошибка дубликата",  # (20)
-                    "Новая запись полностью совпадает с шаблоном! Измените поле.",  # (20)
-                )  # (16)
-                return  # (16)
-        processed_data = {}  # (8)
-        for k, v in data.items():  # (8)
-            if FIELDS_CONFIG[k] is int and v != "":  # (12)
-                processed_data[k] = int(v)  # (16)
-            else:  # (12)
-                processed_data[k] = v  # (16)
+        processed_data = {
+            k: apply_field_type(v, FIELDS_CONFIG[k])
+            for k, v in data.items()
+        }
         self.df = pd.concat(  # (8)
             [self.df, pd.DataFrame([processed_data])], ignore_index=True  # (12)
         )  # (8)
-        save_data(self.df, FILE_NAME)  # (8)
+        if not _save_with_retry(self.df, FILE_NAME):
+            messagebox.showerror("Ошибка", "Не удалось сохранить файл. Запись не создана.")
+            return
+        self.recompute_column_widths()
         self.refresh_table()  # (8)
         self.clear_form()  # (8)
         messagebox.showinfo("Готово", "Запись успешно создана!")  # (8)
-
     def update_data(self):  # (4)
         if self.selected_index is None:  # (8)
             messagebox.showwarning(  # (12)
@@ -385,56 +690,94 @@ class VoyageAppTabs:  # (0)
         if not self.validate_form_data(data):  # (8)
             return  # (12)
 
+        # Проверка на полный дубль: собираем будущую строку и сверяем с остальными
+        candidate = self.df.loc[self.selected_index].to_dict()
+        for k, v in data.items():
+            candidate[k] = apply_field_type(v, FIELDS_CONFIG[k])
+        dup_idx = find_full_duplicate(self.df, candidate, exclude_index=self.selected_index)
+        if dup_idx is not None:
+            messagebox.showerror(
+                "Ошибка дубликата",
+                f"Запись полностью совпадает с записью № {dup_idx + 1}. Измените поле.",
+            )
+            return
+
         # Записываем измененные поля из формы обратно в self.df
         for k, v in data.items():  # (8)
-            if FIELDS_CONFIG[k] is int:  # (12)
-                self.df.at[self.selected_index, k] = int(v) if v != "" else 0  # (16)
-            else:  # (12)
-                self.df.at[self.selected_index, k] = v  # (16)
+            self.df.at[self.selected_index, k] = apply_field_type(v, FIELDS_CONFIG[k])
 
         # Сохраняем обновленный DataFrame в Excel-файл
-        save_data(self.df, FILE_NAME)  # (8)
+        if not _save_with_retry(self.df, FILE_NAME):
+            messagebox.showerror("Ошибка", "Не удалось сохранить файл. Изменения не сохранены.")
+            return
 
         # ВАЖНО: Перечитываем данные из файла, чтобы обновить оперативную память
         self.df = load_data(FILE_NAME)  # (8)
 
         # Перерисовываем таблицу и очищаем форму ввода
+        self.recompute_column_widths()
         self.refresh_table()  # (8)
         self.clear_form()  # (8)
         messagebox.showinfo("Готово", "Изменения успешно сохранены в таблицу и файл!")  # (8)
+
     def delete_data(self):  # (4)
         selected_item = self.tree.selection()  # (8)
         if not selected_item:  # (8)
-            messagebox.showwarning(  # (12)
-                "Удаление", "Сначала выберите строку в таблице для удаления."  # (16)
-            )  # (12)
-            return  # (12)
+            return
+
         target_index = int(selected_item[0])  # (8)
-        if messagebox.askyesno(  # (8)
-            "Подтверждение",  # (12)
-            "Вы уверены, что хотите безвозвратно удалить эту запись?",  # (12)
-        ):  # (8)
+
+        if messagebox.askyesno("Подтверждение", "Вы уверены, что хотите удалить эту запись и все связанные каталоги?"):
+            try:
+                # ВАЖНО: Просто считываем уже готовый UID из ячейки выбранной строки!
+                parent_uid = self.df.at[target_index, "UID"]
+            except Exception:
+                messagebox.showerror("Ошибка", "Не удалось считать уникальный ключ записи.")
+                return
+
+            # ШАГ 1: Сначала удаляем сам рейс из основного DataFrame и сохраняем его на диск
             self.df = delete_row_from_df(self.df, target_index)  # (12)
-            save_data(self.df, FILE_NAME)  # (12)
-            self.refresh_table()  # (12)
-            self.clear_form()  # (12)
-            messagebox.showinfo("Успех", "Запись успешно удалена.")  # (12)
+            if not _save_with_retry(self.df, FILE_NAME):
+                messagebox.showerror("Ошибка", "Не удалось сохранить файл. Удаление отменено.")
+                return
+
+            # ШАГ 2: Принудительно обновляем индексы главной таблицы в памяти,
+            # чтобы программа зафиксировала новое состояние базы данных
+            self.df = self.df.reset_index(drop=True)
+
+            # ШАГ 3: ТОЛЬКО ТЕПЕРЬ фильтруем подчиненную таблицу по parent_uid
+            # Принудительно приводим к строковому типу, чтобы исключить нестыковку форматов Excel
+
+            self.sub_df["UID_Родителя"] = self.sub_df["UID_Родителя"].astype(str).str.strip()
+            clean_uid = str(parent_uid).strip()
+
+            self.sub_df = self.sub_df[self.sub_df["UID_Родителя"] != clean_uid].reset_index(drop=True)
+
+            # ШАГ 4: Физически записываем очищенную подчиненную таблицу на диск
+            if not _save_with_retry(self.sub_df, SUB_FILE_NAME):
+                messagebox.showerror("Ошибка", "Не удалось сохранить файл каталогов.")
+                return
+
+            # ШАГ 5: Перерисовываем экран (теперь данные гарантированно не вернутся)
+            self.recompute_column_widths()
+            self.refresh_table()
+            self.clear_form()
+            messagebox.showinfo("Успех", "Запись рейса и все связанные каталоги успешно удалены.")
+
     def search_data(self):  # (4)
-        search_criteria = self.get_form_values()  # (8)
-        filtered_df = self.df.copy()  # (8)
-        for field, value in search_criteria.items():  # (8)
-            if value != "":  # (12)
-                if FIELDS_CONFIG[field] is int:  # (12)
-                    filtered_df = filtered_df[  # (16)
-                        filtered_df[field].astype(str) == value  # (20)
-                    ]  # (16)
-                else:  # (12)
-                    filtered_df = filtered_df[  # (16)
-                        filtered_df[field]  # (20)
-                            .astype(str)  # (24)
-                            .str.contains(value, case=False, na=False)  # (24)
-                    ]  # (16)
-        self.refresh_table(filtered_df)  # (8)
+        # «Поиск» теперь задаёт ПОСТОЯННЫЙ фильтр: таблица остаётся отфильтрованной
+        # до явной отмены кнопкой «Сбросить фильтр». Фильтр пересчитывается после
+        # добавления/редактирования/удаления (см. refresh_table).
+        self.current_filter = self._collect_filter_criteria()
+        self.refresh_table()  # (8)
+
+    def reset_filter(self):
+        """Отменяет постоянный фильтр: показывает все записи."""
+        self.current_filter = None
+        reset_form_fields(self.inputs)
+        self.selected_index = None
+        self.refresh_table()
+        messagebox.showinfo("Фильтр снят", "Постоянный фильтр отменён. Показаны все записи.")
 
     def open_detail_view(self):  # (4)
         """Проверяет выделение строки и открывает карточный режим."""  # (8)
@@ -450,6 +793,33 @@ class VoyageAppTabs:  # (0)
 
         # Запускаем окно карточек  # (8)
         DetailViewWindow(self, pandas_index)  # (8)
+
+    def open_issue_journal(self):
+        """Открывает окно журнала выдачи акустических данных для выбранного рейса."""
+        selected_item = self.tree.selection()
+        init_row = None
+        if selected_item:
+            idx = int(selected_item[0])
+            init_row = self.df.loc[idx].to_dict()
+            # Если рейс выбран — спрашиваем, добавить его в журнал выдачи
+            label = (f"{self.df.at[idx, '№ п/п']} | {self.df.at[idx, 'Рейс']} | "
+                     f"{self.df.at[idx, 'Судно']} | {self.df.at[idx, 'Год']}")
+            answer = messagebox.askyesnocancel(
+                "Журнал выдачи акустических данных",
+                f"Добавить текущую запись в БД выданных акустических данных?\n\n"
+                f"Рейс: {label}\n\n"
+                "«Да» — оформить выдачу данных этого рейса\n"
+                "«Нет» — открыть журнал без добавления\n"
+                "«Отмена» — не открывать журнал"
+            )
+            if answer is None:  # Отмена
+                return
+            if not answer:  # Нет — журнал без добавления
+                init_row = None
+        # Да или рейс не выбран — открываем окно журнала (при выборе рейса контекст предзаполнен)
+        # on_exit -> app.on_closing (бэкап основной БД), привязывается в __main__
+        IssueManagerWindow(self, init_row=init_row,
+                           on_exit=getattr(self, "on_closing", None))
 
     def export_report(self):  # (4)
         # Определяем, какие данные сейчас отображаются в таблице
@@ -467,20 +837,99 @@ class VoyageAppTabs:  # (0)
             messagebox.showwarning("Экспорт", "Нет данных для экспорта.")  # (12)
             return  # (12)
 
-        # Открываем стандартное диалоговое окно Windows для сохранения файла
-        file_path = filedialog.asksaveasfilename(  # (8)
-            defaultextension=".txt",  # (12)
-            filetypes=[("Текстовый файл", "*.txt"), ("Все файлы", "*.*")],  # (12)
-            title="Сохранить отчет как..."  # (12)
-        )  # (8)
+        # Спрашиваем формат: TXT или XLSX
+        choice = messagebox.askyesnocancel(
+            "Формат отчета",
+            "Выберите формат отчета:\n\n"
+            "«Да» — XLSX (с полями каталогов, развёрнуто по строкам)\n"
+            "«Нет» — TXT (простой текст, как сейчас)\n"
+            "«Отмена» — выйти",
+        )
+        if choice is None:
+            return
 
-        if file_path:  # (8)
-            # Вызываем процедуру экспорта из helpers.py
-            export_to_txt(export_df, file_path)  # (12)
+        # Определяем расширение и фильтр по умолчанию
+        if choice:  # True = XLSX
+            def_ext = ".xlsx"
+            filetypes = [("Excel файл", "*.xlsx"), ("Все файлы", "*.*")]
+        else:  # False = TXT
+            def_ext = ".txt"
+            filetypes = [("Текстовый файл", "*.txt"), ("Все файлы", "*.*")]
 
-            status = "отфильтрованных" if is_filtered else "всех"  # (12)
-            messagebox.showinfo("Успех",
-                                f"Отчет по форме ({status} записей: {len(export_df)}) успешно сохранен!")  # (12)
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=def_ext,
+            filetypes=filetypes,
+            title="Сохранить отчет как..."
+        )
+
+        if not file_path:
+            return
+
+        if choice:  # XLSX
+            export_to_xlsx_with_catalogs(export_df, self.sub_df, file_path)
+        else:  # TXT
+            export_to_txt(export_df, file_path)
+
+        fmt = "XLSX" if choice else "TXT"
+        status = "отфильтрованных" if is_filtered else "всех"
+        messagebox.showinfo("Успех",
+                            f"Отчет ({fmt}, {status} записей: {len(export_df)}) успешно сохранён!")
+
+    def add_sub_data(self):
+        if self.selected_index is None:
+            messagebox.showwarning("Внимание", "Сначала выберите рейс в основной таблице!")
+            return
+
+        # parent_row = self.df.loc[self.selected_index].to_dict()
+        # parent_uid = generate_row_uid(parent_row)
+        # Берем уже ГОТОВЫЙ, зафиксированный UID из ячейки выбранного рейса
+        # Это гарантирует, что ключ будет 1 в 1 таким же, каким его увидит программа при перезапуске
+        try:
+            parent_uid = str(self.df.at[self.selected_index, "UID"]).strip()
+        except Exception:
+            # Если колонки UID в df еще нет, берем ваш родной parent_row
+            parent_row = self.df.loc[self.selected_index].to_dict()
+            parent_uid = generate_row_uid(parent_row)
+
+        # Собираем данные из полей ввода каталогов
+        new_row = {"UID_Родителя": parent_uid}
+        for field, entry in self.sub_inputs.items():
+            new_row[field] = apply_field_type(entry.get(), SUB_TABLE_FIELDS[field])
+        # МГНОВЕННЫЙ РАСЧЕТ СОБСТВЕННОГО UID КАТАЛОГА)
+        # Вычисляем следующий физический индекс для новой строки в подчиненной таблице
+        next_idx = len(self.sub_df)
+        # Присваиваем личный уникальный UID, связывая ключ родителя и номер строки
+        new_row["UID"] = f"{parent_uid}__sub_{next_idx}"
+
+        # Добавляем в DataFrame и сохраняем файл
+        self.sub_df = pd.concat([self.sub_df, pd.DataFrame([new_row])], ignore_index=True)
+        if not _save_with_retry(self.sub_df, SUB_FILE_NAME):
+            messagebox.showerror("Ошибка", "Не удалось сохранить файл. Каталог не добавлен.")
+            return
+
+        # Очищаем поля ввода дочерней таблицы
+        for entry in self.sub_inputs.values():
+            entry.delete(0, tk.END)
+
+        # Обновляем отображение
+        self.on_row_select(None)
+        messagebox.showinfo("Готово", "Данные о каталогах успешно добавлены!")
+
+    def delete_sub_data(self):
+        selected_sub = self.sub_tree.selection()
+        if not selected_sub:
+            messagebox.showwarning("Удаление", "Выберите строку в нижней таблице для удаления.")
+            return
+
+        target_idx = int(selected_sub[0])
+        if messagebox.askyesno("Подтверждение", "Удалить выбранную запись о каталоге?"):
+            self.sub_df = self.sub_df.drop(target_idx).reset_index(drop=True)
+            if not _save_with_retry(self.sub_df, SUB_FILE_NAME):
+                messagebox.showerror("Ошибка", "Не удалось сохранить файл. Запись не удалена.")
+                return
+            self.on_row_select(None)
+            messagebox.showinfo("Успех", "Запись удалена.")
+
 
 class DetailViewWindow:  # (0)
     def __init__(self, app_instance, start_index: int):  # (4)
@@ -782,44 +1231,44 @@ class DetailViewWindow:  # (0)
     def accept_card_changes(self):
         updated_row = {}  # (8)
 
-        # Списки числовых полей из условий вашей задачи для явного приведения типов
-        int_fields = ["№ п/п", "Год", "№ рейса", "№ этапа рейса", "№ диска", "Инвентарный № диска"]  # (8)
-
         for field, entry in self.center_entries.items():  # (8)
             val = entry.get().strip()  # (12)
 
-            # Если поле должно быть числовым и оно заполнено — переводим в int
-            if field in int_fields:  # (12)
-                if val != "":  # (16)
-                    try:  # (20)
-                        updated_row[field] = int(val)  # (24)
-                    except ValueError:  # (20)
-                        messagebox.showerror("Ошибка типа данных",
-                                             f"Поле '{field}' должно содержать только целое число!")  # (24)
-                        return  # (24)
+            # Если поле числовое — проверяем и приводим, пустое оставляем как NaN
+            if FIELDS_CONFIG.get(field) is int:  # (12)
+                if val == "":  # (16)
+                    updated_row[field] = float('nan')  # (20) Поле не обязательно к заполнению
+                elif val.lstrip('-').isdigit():  # (16)
+                    updated_row[field] = int(val)  # (20)
                 else:  # (16)
-                    updated_row[field] = np.nan  # (20) Поле не обязательно к заполнению
+                    messagebox.showerror("Ошибка типа данных",
+                                         f"Поле '{field}' должно содержать только целое число!")  # (20)
+                    return  # (20)
             else:  # (12)
                 updated_row[field] = val  # (16) Для всех текстовых полей оставляем как есть
+
+        # Проверка на полный дубль: собираем будущую строку и сверяем с остальными
+        candidate = self.app.df.loc[self.current_index].to_dict()
+        candidate.update(updated_row)
+        dup_idx = find_full_duplicate(self.app.df, candidate, exclude_index=self.current_index)
+        if dup_idx is not None:
+            messagebox.showerror(
+                "Ошибка дубликата",
+                f"Запись полностью совпадает с записью № {dup_idx + 1}. Измените поле.",
+            )
+            return
 
         # Сохраняем проверенные данные в Pandas DataFrame
         for field, value in updated_row.items():  # (8)
             self.app.df.at[self.current_index, field] = value  # (12)
 
-        # УНИВЕРСАЛЬНОЕ ОБНОВЛЕНИЕ ТАБЛИЦЫ НА ГЛАВНОМ ЭКРАНЕ (без вызова внешних функций)
-        try:  # (8)
-            # 1. Очищаем старые строки в вашей таблице Treeview
-            for item in self.app.tree.get_children():  # (12)
-                self.app.tree.delete(item)  # (16)
+        if not _save_with_retry(self.app.df, FILE_NAME):
+            messagebox.showerror("Ошибка", "Не удалось сохранить файл. Изменения не сохранены.")
+            return
 
-            # 2. Заново заполняем таблицу актуальными данными из измененного DataFrame
-            for idx, row in self.app.df.iterrows():  # (12)
-                self.app.tree.insert("", "end", iid=idx, values=list(row))  # (16)
-        except Exception as e:  # (8)
-            print(f"Предупреждение при отрисовке таблицы: {e}")  # (12)
-
-        # messagebox.showinfo("Успех", "Изменения успешно сохранены в оперативную память!")  # (8)
-        save_data(self.app.df, FILE_NAME)
+        # Обновляем главную таблицу и ширины колонок
+        self.app.recompute_column_widths()
+        self.app.refresh_table()
         self.refresh_cards()  # (8)
 
     def exit_and_refresh(self):  # (4)
@@ -830,49 +1279,75 @@ class DetailViewWindow:  # (0)
         except Exception:  # (8)
             pass  # (12)
 
-        try:  # (8)
-            for item in self.app.tree.get_children():  # (12)
-                self.app.tree.delete(item)  # (16)
-            for idx, row in self.app.df.iterrows():  # (12)
-                self.app.tree.insert("", "end", iid=idx, values=list(row))  # (16)
-        except Exception:  # (8)
-            pass  # (12)
+        self.app.refresh_table()
 
         self.app.root.update_idletasks()  # (8)
         self.window.destroy()  # (8)
 
 
 if __name__ == "__main__":
-    # 1. Запоминаем хэш файла ДО запуска программы
-    start_hash = get_file_hash(FILE_NAME)
-    # 2. Делаем обязательный бэкап при старте (как у вас и было)
-    create_backup(FILE_NAME)
-
     root = tk.Tk()
     app = VoyageAppTabs(root)
+
+    # 1. Бэкап при старте — ПОСЛЕ стартовой обработки данных.
+    #    Архив создается только если содержимое файлов отличается от последнего архива
+    #    (сравнение по MD5 файлов В АРХИВЕ, а не самого архива).
+    #    Точка после VoyageAppTabs важна: если стартовая обработка ничего не меняла,
+    #    файлы совпадают с последним архивом и лишний бэкап не создаётся.
+    latest = get_latest_backup(BACKUP_DIR)
+    if latest is not None and files_match_archive([FILE_NAME, SUB_FILE_NAME], latest):
+        print("Изменений с момента последнего бэкапа нет. Стартовый бэкап пропущен.")
+    else:
+        res = create_backup([FILE_NAME, SUB_FILE_NAME], BACKUP_DIR)
+        if res:
+            print(f"Успешно создан бэкап: {res}")
+
+    # 2. Снимок состояния ОБОИХ файлов после стартовой обработки
+    start_hashes = {
+        FILE_NAME: get_file_hash(FILE_NAME),
+        SUB_FILE_NAME: get_file_hash(SUB_FILE_NAME),
+    }
 
     # Функция безопасного закрытия
     def on_closing():
         # Отключаем перехватчик, чтобы избежать зацикливания при закрытии
         root.protocol("WM_DELETE_WINDOW", lambda: None)
 
-        # 3. Проверяем хэш файла в момент закрытия
-        end_hash = get_file_hash(FILE_NAME)
+        # 3. Сравниваем хэши обоих файлов в момент закрытия
+        changed = any(
+            get_file_hash(name) != start_hashes[name]
+            for name in (FILE_NAME, SUB_FILE_NAME)
+        )
 
-        # Если хэши разные — значит, пользователь вносил изменения или сохранял данные
-        if start_hash != end_hash:
+        # Финальный бэкап создается при ЛЮБОМ изменении данных однозначно.
+        # Лимит проверяется внутри create_backup: при достижении удаляется 1 самый
+        # старый архив, при превышении — 1 старый + предупреждение.
+        if changed:
             print("Обнаружены изменения в базе данных. Создается финальный бэкап...")
-            create_backup(FILE_NAME)
+            res2 = create_backup([FILE_NAME, SUB_FILE_NAME], BACKUP_DIR)
+            if res2:
+                print(f"Успешно создан бэкап: {res2}")
         else:
             print("Изменений не было. Финальный бэкап пропущен.")
 
-        clean_duplicate_backups()  # Функция сама проверит маркер и решит, запускаться или нет
+        clean_duplicate_backups(BACKUP_DIR)  # Функция сама проверит маркер и решит, запускаться или нет
 
         # 4. Жестко и последовательно останавливаем интерфейс Tkinter
         root.quit()
         root.destroy()
 
+        # Записываем завершение в лог (только для .exe)
+        if getattr(sys, 'frozen', False):
+            print(f"VoyageManager завершение: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
+            try:
+                sys.stdout.flush()
+                sys.stdout.close()
+            except Exception:
+                pass
+
     # Привязываем закрытие окна на крестик к нашей чистой функции
     root.protocol("WM_DELETE_WINDOW", on_closing)
+    # Доступ к on_closing из экземпляра app (для выхода из журнала выдачи)
+    app.on_closing = on_closing
 
     root.mainloop()
